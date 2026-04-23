@@ -94,10 +94,6 @@ chore: configuration gitignore et requirements
 
 Toute contribution passe par une **Pull Request** vers `develop`. Une review est requise avant le merge.
 
- Équipe
-
-Projet réalisé dans le cadre du stage EPSI Paris — promotion CDA 2025/2026.
-
 ---
 
 *SmartGamble — Paris éclairés, risques maîtrisés.*
