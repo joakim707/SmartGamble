@@ -47,7 +47,8 @@ smartgamble/
 
 bash
  Cloner le repo
-git clone https://github.com/<org>/smartgamble.git
+git clone https://github.com/joakim707/SmartGamble.git
+
 cd smartgamble
 
  Créer un environnement virtuel
