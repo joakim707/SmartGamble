@@ -69,3 +69,8 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# ========================
+# Claude Code (worktrees internes)
+# ========================
+.claude/
