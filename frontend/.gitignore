@@ -1,15 +1,20 @@
-# v0 sandbox internal files
-__v0_runtime_loader.js
-__v0_devtools.tsx
-__v0_jsx-dev-runtime.ts
-.snowflake/
-.v0-trash/
-.vercel/
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+out/
 
 # Environment variables
 .env*.local
 
-# Common ignores
-node_modules
-.next/
+# Vite artifacts (from scaffolding)
+tsconfig.app.json
+tsconfig.node.json
+vite.config.ts
+package-lock.json
+
+# Misc
 .DS_Store
+Thumbs.db
+*.log
