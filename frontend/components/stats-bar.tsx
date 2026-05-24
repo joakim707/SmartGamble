@@ -1,15 +1,19 @@
 'use client'
 
-import { mockMatches } from '@/lib/mock-data'
 import { TrendingUp, Trophy, Clock, Zap } from 'lucide-react'
+import type { Match } from '@/lib/types'
 
-export function StatsBar() {
-  const totalMatches = mockMatches.length
-  const avgConfidence = Math.round(
-    mockMatches.reduce((acc, m) => acc + (m.confidenceScore || 0), 0) / totalMatches
-  )
-  const highConfidenceCount = mockMatches.filter(m => (m.confidenceScore || 0) >= 75).length
-  const leagues = [...new Set(mockMatches.map(m => m.league))].length
+interface StatsBarProps {
+  matches: Match[]
+}
+
+export function StatsBar({ matches }: StatsBarProps) {
+  const totalMatches = matches.length
+  const avgConfidence = totalMatches > 0
+    ? Math.round(matches.reduce((acc, m) => acc + (m.confidenceScore || 0), 0) / totalMatches)
+    : 0
+  const highConfidenceCount = matches.filter(m => (m.confidenceScore || 0) >= 75).length
+  const leagues = [...new Set(matches.map(m => m.league))].length
 
   const stats = [
     { label: 'Matchs à venir', value: totalMatches, icon: Clock },

@@ -25,7 +25,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="fr" className="dark bg-background">
+    <html lang="fr" className="dark bg-background" suppressHydrationWarning>
       <body className={`${geist.variable} ${geistMono.variable} font-sans antialiased min-h-screen`}>
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}

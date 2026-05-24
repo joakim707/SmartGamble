@@ -65,7 +65,7 @@ export default function HomePage() {
       />
       
       <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-        <StatsBar />
+        <StatsBar matches={matches} />
         
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <aside className="lg:col-span-1 space-y-6">
