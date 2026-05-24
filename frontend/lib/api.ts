@@ -125,6 +125,26 @@ export async function getTeamForms(): Promise<TeamForm[]> {
     }))
 }
 
+export async function getAbsentPlayersByTeam(teamId: number): Promise<Player[]> {
+  const { data, error } = await supabase
+    .from('player')
+    .select('id, name, position, shirt_number')
+    .eq('team_id', teamId)
+    .eq('is_absent', true)
+    .order('position')
+
+  if (error || !data) return []
+
+  return data.map(p => ({
+    id:          p.id,
+    name:        p.name,
+    position:    p.position ?? null,
+    nationality: null,
+    shirtNumber: p.shirt_number ?? null,
+    photoUrl:    null,
+  }))
+}
+
 export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
   const { data, error } = await supabase
     .from('player')

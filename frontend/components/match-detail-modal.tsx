@@ -1,9 +1,10 @@
 'use client'
 
-import { Match } from '@/lib/types'
+import { Match, Player } from '@/lib/types'
 import { LineupPlayer } from '@/lib/lineup'
 import { getConfidenceLabel, formatMatchDate, formatMatchTime } from '@/lib/mock-data'
 import { getProbableLineup, DEFAULT_SEASON } from '@/lib/lineup'
+import { getAbsentPlayersByTeam } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
   Dialog,
@@ -17,6 +18,7 @@ import {
   TrendingUp,
   BarChart3,
   Users,
+  UserX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import Image from 'next/image'
@@ -48,9 +50,11 @@ function groupByPosition(players: LineupPlayer[]): Record<string, LineupPlayer[]
 
 export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps) {
   const [imageError, setImageError] = useState<Record<number, boolean>>({})
-  const [homePlayers, setHomePlayers] = useState<LineupPlayer[]>([])
-  const [awayPlayers, setAwayPlayers] = useState<LineupPlayer[]>([])
-  const [lineupLoading, setLineupLoading] = useState(false)
+  const [homePlayers, setHomePlayers]       = useState<LineupPlayer[]>([])
+  const [awayPlayers, setAwayPlayers]       = useState<LineupPlayer[]>([])
+  const [homeAbsents, setHomeAbsents]       = useState<Player[]>([])
+  const [awayAbsents, setAwayAbsents]       = useState<Player[]>([])
+  const [lineupLoading, setLineupLoading]   = useState(false)
 
   useEffect(() => {
     if (!open || !match) return
@@ -58,9 +62,13 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
     Promise.all([
       getProbableLineup(match.id, match.homeTeam.id, DEFAULT_SEASON),
       getProbableLineup(match.id, match.awayTeam.id, DEFAULT_SEASON),
-    ]).then(([home, away]) => {
+      getAbsentPlayersByTeam(match.homeTeam.id),
+      getAbsentPlayersByTeam(match.awayTeam.id),
+    ]).then(([home, away, homeAbs, awayAbs]) => {
       setHomePlayers(home)
       setAwayPlayers(away)
+      setHomeAbsents(homeAbs)
+      setAwayAbsents(awayAbs)
       setLineupLoading(false)
     })
   }, [open, match])
@@ -257,6 +265,20 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             )}
           </div>
 
+          {/* Joueurs absents */}
+          {(homeAbsents.length > 0 || awayAbsents.length > 0) && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <UserX className="h-4 w-4 text-destructive" />
+                <h4 className="font-semibold text-foreground">Absents</h4>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <AbsentsColumn teamName={match.homeTeam.shortName} players={homeAbsents} />
+                <AbsentsColumn teamName={match.awayTeam.shortName} players={awayAbsents} />
+              </div>
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex gap-3 pt-2">
             <Button
@@ -322,6 +344,31 @@ function LineupColumn({ teamName, players, hasStats }: LineupColumnProps) {
           </div>
         ) : null}
       </div>
+    </div>
+  )
+}
+
+function AbsentsColumn({ teamName, players }: { teamName: string; players: Player[] }) {
+  if (players.length === 0) return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{teamName}</p>
+      <p className="text-xs text-muted-foreground italic">Aucun absent</p>
+    </div>
+  )
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{teamName}</p>
+      <ul className="space-y-1.5">
+        {players.map(p => (
+          <li key={p.id} className="flex items-center gap-2">
+            <span className="px-1.5 py-0.5 bg-destructive/15 text-destructive text-[9px] font-bold rounded uppercase shrink-0">
+              {p.position ? p.position.slice(0, 3) : 'N/A'}
+            </span>
+            <span className="text-sm text-muted-foreground line-through truncate">{p.name}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
