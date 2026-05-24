@@ -14,6 +14,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       away_team:away_team_id(id, name, short_name, logo_url)
     `)
     .eq('status', 'upcoming')
+    .gte('match_date', new Date().toISOString())
     .order('match_date')
 
   if (matchesError || !matchesData) {

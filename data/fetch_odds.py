@@ -18,11 +18,13 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 LEAGUES = {
-    "soccer_france_ligue_one": "Ligue 1",
-    "soccer_spain_la_liga":    "La Liga",
+    "soccer_france_ligue_one":   "Ligue 1",
+    "soccer_spain_la_liga":      "La Liga",
+    "soccer_germany_bundesliga": "Bundesliga",
 }
 
-BOOKMAKERS = "bet365,unibet,betclic,winamax"
+# Bookmakers FR pertinents avec leurs clés exactes de l'API
+BOOKMAKERS = "winamax_fr,unibet_fr,betclic_fr,pmu_fr,betfair_ex_eu,pinnacle,williamhill,unibet_se,unibet_nl,betsson,marathonbet,onexbet"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -99,16 +101,16 @@ def fetch_and_store_odds():
     for sport_key, league_name in LEAGUES.items():
         print(f"\nRécupération des cotes — {league_name}...")
 
-        response = requests.get(
-            f"{BASE_URL}/sports/{sport_key}/odds",
-            params={
-                "apiKey":     ODDS_API_KEY,
-                "regions":    "eu",
-                "markets":    "h2h",
-                "bookmakers": BOOKMAKERS,
-                "oddsFormat": "decimal",
-            },
-        )
+        params = {
+            "apiKey":     ODDS_API_KEY,
+            "regions":    "eu",
+            "markets":    "h2h",
+            "oddsFormat": "decimal",
+        }
+        if BOOKMAKERS:
+            params["bookmakers"] = BOOKMAKERS
+
+        response = requests.get(f"{BASE_URL}/sports/{sport_key}/odds", params=params)
 
         remaining = response.headers.get("x-requests-remaining", "?")
         print(f"  Requêtes restantes : {remaining}")
