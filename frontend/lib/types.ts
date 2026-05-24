@@ -6,6 +6,15 @@ export interface Team {
   league: string
 }
 
+export interface Player {
+  id: number
+  name: string
+  position: string | null
+  nationality: string | null
+  shirtNumber: number | null
+  photoUrl: string | null
+}
+
 export interface Match {
   id: number
   homeTeam: Team

@@ -1,7 +1,8 @@
 'use client'
 
-import { Match } from '@/lib/types'
+import { Match, Player } from '@/lib/types'
 import { getConfidenceLabel, formatMatchDate, formatMatchTime } from '@/lib/mock-data'
+import { getPlayersByTeam } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
   Dialog,
@@ -9,16 +10,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { 
-  Calendar, 
-  Clock, 
-  TrendingUp, 
+import {
+  Calendar,
+  Clock,
+  TrendingUp,
   BarChart3,
-  X 
+  Users,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import Image from 'next/image'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 interface MatchDetailModalProps {
   match: Match | null
@@ -26,13 +27,48 @@ interface MatchDetailModalProps {
   onClose: () => void
 }
 
+const POSITION_ORDER = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+const POSITION_LABEL: Record<string, string> = {
+  Goalkeeper: 'Gardiens',
+  Defender: 'Défenseurs',
+  Midfielder: 'Milieux',
+  Forward: 'Attaquants',
+}
+
+function groupByPosition(players: Player[]): Record<string, Player[]> {
+  const groups: Record<string, Player[]> = {}
+  for (const p of players) {
+    const pos = p.position || 'Autre'
+    if (!groups[pos]) groups[pos] = []
+    groups[pos].push(p)
+  }
+  return groups
+}
+
 export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps) {
   const [imageError, setImageError] = useState<Record<number, boolean>>({})
+  const [homePlayers, setHomePlayers] = useState<Player[]>([])
+  const [awayPlayers, setAwayPlayers] = useState<Player[]>([])
+  const [lineupLoading, setLineupLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open || !match) return
+    setLineupLoading(true)
+    Promise.all([
+      getPlayersByTeam(match.homeTeam.id),
+      getPlayersByTeam(match.awayTeam.id),
+    ]).then(([home, away]) => {
+      setHomePlayers(home)
+      setAwayPlayers(away)
+      setLineupLoading(false)
+    })
+  }, [open, match])
 
   if (!match) return null
 
   const confidence = match.confidenceScore ? getConfidenceLabel(match.confidenceScore) : null
   const bookmakers = match.odds?.bookmakers || []
+  const hasLineup = homePlayers.length > 0 || awayPlayers.length > 0
 
   const handleImageError = (teamId: number) => {
     setImageError(prev => ({ ...prev, [teamId]: true }))
@@ -190,22 +226,93 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             </div>
           )}
 
+          {/* Compositions probables */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <Users className="h-4 w-4 text-primary" />
+              <h4 className="font-semibold text-foreground">Compositions probables</h4>
+            </div>
+
+            {lineupLoading ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">Chargement...</p>
+            ) : !hasLineup ? (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                Aucune composition disponible pour ce match
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-4">
+                <LineupColumn
+                  teamName={match.homeTeam.shortName}
+                  players={homePlayers}
+                />
+                <LineupColumn
+                  teamName={match.awayTeam.shortName}
+                  players={awayPlayers}
+                />
+              </div>
+            )}
+          </div>
+
           {/* Action Buttons */}
-          <div className="flex gap-3 pt-4">
-            <Button 
-              variant="outline" 
+          <div className="flex gap-3 pt-2">
+            <Button
+              variant="outline"
               className="flex-1"
               onClick={onClose}
             >
               Fermer
             </Button>
-            <Button className="flex-1 bg-primary text-primary-foreground">
-              Ajouter à mon suivi
-            </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+interface LineupColumnProps {
+  teamName: string
+  players: Player[]
+}
+
+function LineupColumn({ teamName, players }: LineupColumnProps) {
+  const groups = groupByPosition(players)
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+        {teamName}
+      </p>
+      <div className="space-y-3">
+        {POSITION_ORDER.filter(pos => groups[pos]?.length).map(pos => (
+          <div key={pos}>
+            <p className="text-[10px] font-medium text-primary uppercase mb-1">
+              {POSITION_LABEL[pos]}
+            </p>
+            <ul className="space-y-1">
+              {groups[pos].map(p => (
+                <li key={p.id} className="flex items-center gap-2 text-sm text-foreground">
+                  {p.shirtNumber !== null && (
+                    <span className="text-[10px] font-bold text-muted-foreground w-4 text-right">
+                      {p.shirtNumber}
+                    </span>
+                  )}
+                  <span className="truncate">{p.name}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        {groups['Autre']?.length ? (
+          <div>
+            <p className="text-[10px] font-medium text-primary uppercase mb-1">Autres</p>
+            <ul className="space-y-1">
+              {groups['Autre'].map(p => (
+                <li key={p.id} className="text-sm text-foreground truncate">{p.name}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </div>
   )
 }
 
