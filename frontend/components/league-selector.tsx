@@ -3,7 +3,6 @@
 import { LEAGUES, League } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
 
 interface LeagueSelectorProps {
   selectedLeague: string
@@ -17,7 +16,7 @@ export function LeagueSelector({ selectedLeague, onLeagueChange }: LeagueSelecto
   return (
     <div className="bg-card border-b border-border">
       <div className="mx-auto max-w-7xl px-4">
-        <ScrollArea className="w-full">
+        <div className="overflow-x-auto scrollbar-none">
           <div className="flex items-center gap-2 py-3">
             {options.map((league) => (
               <Button
@@ -36,8 +35,7 @@ export function LeagueSelector({ selectedLeague, onLeagueChange }: LeagueSelecto
               </Button>
             ))}
           </div>
-          <ScrollBar orientation="horizontal" className="invisible" />
-        </ScrollArea>
+        </div>
       </div>
     </div>
   )
