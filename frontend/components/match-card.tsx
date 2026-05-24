@@ -2,7 +2,7 @@
 
 import Image from 'next/image'
 import { Match, RiskLevel } from '@/lib/types'
-import { formatMatchTime, getConfidenceLabel } from '@/lib/mock-data'
+import { formatMatchTime, formatMatchDate, getConfidenceLabel } from '@/lib/mock-data'
 import { cn } from '@/lib/utils'
 import { Clock, TrendingUp, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
@@ -30,8 +30,9 @@ export function MatchCard({ match, onClick }: MatchCardProps) {
         <div className="flex flex-col items-center min-w-[60px]">
           <div className="flex items-center gap-1 text-muted-foreground">
             <Clock className="h-3 w-3" />
-            <span className="text-xs">{formatMatchTime(match.matchDate)}</span>
+            <span className="text-xs font-medium">{formatMatchTime(match.matchDate)}</span>
           </div>
+          <span className="text-[10px] text-muted-foreground/70 mt-0.5">{formatMatchDate(match.matchDate)}</span>
           {match.status === 'live' && (
             <span className="mt-1 px-2 py-0.5 bg-[var(--live)] text-white text-[10px] font-bold rounded animate-pulse">
               LIVE
