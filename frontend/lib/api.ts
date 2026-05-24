@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import { Match } from './types'
+import { Match, Player } from './types'
 
 export async function getUpcomingMatches(): Promise<Match[]> {
   // 1. Récupérer les matchs à venir
@@ -80,7 +80,26 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       },
       odds: formattedOdds,
       // Faux score en attendant le modèle d'IA
-      confidenceScore: Math.floor(Math.random() * (95 - 60 + 1)) + 60 
+      confidenceScore: Math.floor(Math.random() * (95 - 60 + 1)) + 60
     }
   })
+}
+
+export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
+  const { data, error } = await supabase
+    .from('player')
+    .select('id, name, position, nationality, shirt_number, photo_url')
+    .eq('team_id', teamId)
+    .order('position')
+
+  if (error || !data) return []
+
+  return data.map(p => ({
+    id: p.id,
+    name: p.name,
+    position: p.position ?? null,
+    nationality: p.nationality ?? null,
+    shirtNumber: p.shirt_number ?? null,
+    photoUrl: p.photo_url ?? null,
+  }))
 }
