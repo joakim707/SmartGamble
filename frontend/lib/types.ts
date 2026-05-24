@@ -53,11 +53,12 @@ export interface League {
 }
 
 export const LEAGUES: League[] = [
-  { id: 'ligue1', name: 'Ligue 1', country: 'France', flag: '🇫🇷', logo: '/leagues/ligue1.png' },
-  { id: 'premier', name: 'Premier League', country: 'England', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', logo: '/leagues/premier.png' },
-  { id: 'laliga', name: 'La Liga', country: 'Spain', flag: '🇪🇸', logo: '/leagues/laliga.png' },
-  { id: 'bundesliga', name: 'Bundesliga', country: 'Germany', flag: '🇩🇪', logo: '/leagues/bundesliga.png' },
-  { id: 'seriea', name: 'Serie A', country: 'Italy', flag: '🇮🇹', logo: '/leagues/seriea.png' },
+  { id: 'ligue1',      name: 'Ligue 1',        country: 'France',  flag: '🇫🇷', logo: '/leagues/ligue1.png' },
+  { id: 'premier',     name: 'Premier League', country: 'England', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', logo: '/leagues/premier.png' },
+  { id: 'laliga',      name: 'La Liga',        country: 'Spain',   flag: '🇪🇸', logo: '/leagues/laliga.png' },
+  { id: 'bundesliga',  name: 'Bundesliga',     country: 'Germany', flag: '🇩🇪', logo: '/leagues/bundesliga.png' },
+  { id: 'seriea',      name: 'Serie A',        country: 'Italy',   flag: '🇮🇹', logo: '/leagues/seriea.png' },
+  { id: 'brasileirao', name: 'Brasileirão',    country: 'Brazil',  flag: '🇧🇷', logo: '/leagues/brasileirao.png' },
 ]
 
 export type RiskLevel = 'low' | 'medium' | 'high'

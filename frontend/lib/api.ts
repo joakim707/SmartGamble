@@ -22,14 +22,20 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     return []
   }
 
-  // 2. Récupérer les cotes pour ces matchs
-  const matchIds = matchesData.map(m => m.id)
-  const { data: oddsData } = await supabase
-    .from('odds')
-    .select('*')
-    .in('match_id', matchIds)
+  // 2. Récupérer les cotes et la forme des équipes en parallèle
+  const matchIds  = matchesData.map(m => m.id)
+  const teamIds   = [...new Set(matchesData.flatMap((m: any) => [m.home_team.id, m.away_team.id]))]
 
-  // 3. Regrouper les cotes par match
+  const [{ data: oddsData }, { data: formData }] = await Promise.all([
+    supabase.from('odds').select('*').in('match_id', matchIds),
+    supabase.from('team_stats').select('team_id, form').in('team_id', teamIds).eq('season', '2024-25'),
+  ])
+
+  // 3. Map forme par équipe
+  const formMap = new Map<number, string>()
+  formData?.forEach(ts => { if (ts.form) formMap.set(ts.team_id, ts.form) })
+
+  // 4. Regrouper les cotes par match
   const oddsMap = new Map()
   if (oddsData) {
     oddsData.forEach(odd => {
@@ -44,7 +50,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     })
   }
 
-  // 4. Formater les données pour le composant React
+  // 5. Formater les données pour le composant React
   return matchesData.map((m: any): Match => {
     const matchOdds = oddsMap.get(m.id)
     let formattedOdds = undefined
@@ -79,16 +85,50 @@ export async function getUpcomingMatches(): Promise<Match[]> {
         league: m.league
       },
       odds: formattedOdds,
-      // Faux score en attendant le modèle d'IA
+      homeForm: formMap.get(m.home_team.id),
+      awayForm: formMap.get(m.away_team.id),
       confidenceScore: Math.floor(Math.random() * (95 - 60 + 1)) + 60
     }
   })
 }
 
+export interface TeamForm {
+  teamId: number
+  name: string
+  shortName: string
+  logoUrl: string
+  league: string
+  form: string
+}
+
+export async function getTeamForms(): Promise<TeamForm[]> {
+  const { data, error } = await supabase
+    .from('team_stats')
+    .select(`
+      form,
+      team:team_id (id, name, short_name, logo_url, league)
+    `)
+    .eq('season', '2024-25')
+    .not('form', 'is', null)
+
+  if (error || !data) return []
+
+  return (data as any[])
+    .filter(row => row.team && row.form)
+    .map(row => ({
+      teamId:    row.team.id,
+      name:      row.team.name,
+      shortName: row.team.short_name || row.team.name.substring(0, 3).toUpperCase(),
+      logoUrl:   row.team.logo_url || '/placeholder-logo.png',
+      league:    row.team.league,
+      form:      row.form as string,
+    }))
+}
+
 export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
   const { data, error } = await supabase
     .from('player')
-    .select('id, name, position, nationality, shirt_number, photo_url')
+    .select('id, name, position, nationality, shirt_number')
     .eq('team_id', teamId)
     .order('position')
 
@@ -100,6 +140,6 @@ export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
     position: p.position ?? null,
     nationality: p.nationality ?? null,
     shirtNumber: p.shirt_number ?? null,
-    photoUrl: p.photo_url ?? null,
+    photoUrl: null,
   }))
 }

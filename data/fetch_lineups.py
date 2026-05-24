@@ -1,9 +1,8 @@
 """
-Récupère les joueurs de chaque équipe via TheSportsDB et les stocke en BDD.
+Récupère les effectifs des équipes via football-data.org et les stocke en BDD.
 
-Flow :
-  1. Pour chaque équipe en BDD → searchteams → récupère idTeam → stocke team.thesportsdb_id
-  2. lookup_all_players → récupère les joueurs → upsert dans player
+Flow : pour chaque ligue → /v4/competitions/{code}/teams → upsert joueurs dans player
+Note: le champ thesportsdb_id stocke ici les IDs football-data.org (réutilisation du schéma).
 """
 
 import os
@@ -14,101 +13,103 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-TSDB_KEY = "3"  # Clé publique gratuite TheSportsDB
+SUPABASE_URL     = os.getenv("SUPABASE_URL")
+SUPABASE_KEY     = os.getenv("SUPABASE_KEY")
+FOOTBALL_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
+
+HEADERS  = {"X-Auth-Token": FOOTBALL_API_KEY}
+BASE_URL = "https://api.football-data.org/v4"
+
+LEAGUES = [
+    {"code": "PL",  "name": "Premier League"},
+    {"code": "FL1", "name": "Ligue 1"},
+    {"code": "PD",  "name": "La Liga"},
+    {"code": "BL1", "name": "Bundesliga"},
+    {"code": "SA",  "name": "Serie A"},
+    {"code": "BSA", "name": "Brasileirão"},
+]
+
+# Mapping positions football-data.org → notre convention
+POSITION_MAP = {
+    "Goalkeeper":          "Goalkeeper",
+    "Defence":             "Defender",
+    "Centre-Back":         "Defender",
+    "Left-Back":           "Defender",
+    "Right-Back":          "Defender",
+    "Midfield":            "Midfielder",
+    "Central Midfield":    "Midfielder",
+    "Defensive Midfield":  "Midfielder",
+    "Attacking Midfield":  "Midfielder",
+    "Offence":             "Forward",
+    "Centre-Forward":      "Forward",
+    "Left Winger":         "Forward",
+    "Right Winger":        "Forward",
+}
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def search_team_id(team_name: str) -> str | None:
-    """Cherche une équipe sur TheSportsDB par son nom, retourne son idTeam."""
-    resp = requests.get(
-        f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}/searchteams.php",
-        params={"t": team_name},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    teams = resp.json().get("teams")
-    if teams:
-        return teams[0]["idTeam"]
-    return None
-
-
-def fetch_players(thesportsdb_id: str) -> list:
-    """Récupère tous les joueurs d'une équipe via son ID TheSportsDB."""
-    resp = requests.get(
-        f"https://www.thesportsdb.com/api/v1/json/{TSDB_KEY}/lookup_all_players.php",
-        params={"id": thesportsdb_id},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    return resp.json().get("player") or []
-
-
 def upsert_player(player: dict, team_id: int) -> None:
-    shirt = player.get("strNumber")
+    raw_pos = player.get("position")
+    shirt   = player.get("shirtNumber")
     supabase.table("player").upsert(
         {
-            "thesportsdb_id": int(player["idPlayer"]),
-            "team_id": team_id,
-            "name": player["strPlayer"],
-            "position": player.get("strPosition"),
-            "nationality": player.get("strNationality"),
-            "shirt_number": int(shirt) if shirt and str(shirt).isdigit() else None,
-            "photo_url": player.get("strThumb") or None,
+            "thesportsdb_id": player["id"],          # football-data.org player ID
+            "team_id":        team_id,
+            "name":           player["name"],
+            "position":       POSITION_MAP.get(raw_pos, raw_pos),
+            "nationality":    player.get("nationality"),
+            "shirt_number":   shirt if isinstance(shirt, int) else None,
         },
         on_conflict="thesportsdb_id",
     ).execute()
 
 
-def run():
-    teams = (
-        supabase.table("team")
-        .select("id, name, thesportsdb_id")
-        .execute()
-        .data
+def fetch_league_squads(league_code: str, league_name: str):
+    print(f"\n=== {league_name} ===")
+    resp = requests.get(
+        f"{BASE_URL}/competitions/{league_code}/teams",
+        headers=HEADERS,
+        timeout=15,
     )
 
-    for team in teams:
-        team_id = team["id"]
-        team_name = team["name"]
-        tsdb_id = team.get("thesportsdb_id")
+    if resp.status_code == 429:
+        print("  Rate limit, attente 60s...")
+        time.sleep(60)
+        return
 
-        # Étape 1 : résoudre l'ID TheSportsDB si absent
-        if not tsdb_id:
-            print(f"Recherche TheSportsDB : {team_name}")
-            try:
-                tsdb_id = search_team_id(team_name)
-            except Exception as e:
-                print(f"  Erreur recherche : {e}")
-                continue
+    if resp.status_code != 200:
+        print(f"  Erreur {resp.status_code} : {resp.text[:120]}")
+        return
 
-            if not tsdb_id:
-                print(f"  Introuvable : {team_name}")
-                continue
+    teams = resp.json().get("teams", [])
+    print(f"  {len(teams)} équipes trouvées")
 
-            supabase.table("team").update({"thesportsdb_id": int(tsdb_id)}).eq("id", team_id).execute()
-            print(f"  ID trouvé : {tsdb_id}")
-            time.sleep(0.5)
+    for team_data in teams:
+        team_name = team_data["name"]
+        squad     = team_data.get("squad") or []
 
-        # Étape 2 : récupérer et stocker les joueurs
-        print(f"Joueurs pour {team_name} (ID TheSportsDB: {tsdb_id})")
-        try:
-            players = fetch_players(tsdb_id)
-        except Exception as e:
-            print(f"  Erreur récupération joueurs : {e}")
+        result = supabase.table("team").select("id").eq("name", team_name).execute()
+        if not result.data:
+            print(f"  [skip] Équipe inconnue en BDD : {team_name}")
             continue
 
-        print(f"  {len(players)} joueurs trouvés")
-        for player in players:
+        team_id = result.data[0]["id"]
+        print(f"  {team_name} : {len(squad)} joueurs")
+
+        for player in squad:
             try:
                 upsert_player(player, team_id)
             except Exception as e:
-                print(f"  Erreur upsert {player.get('strPlayer')} : {e}")
+                print(f"    Erreur {player.get('name')} : {e}")
 
-        time.sleep(0.5)
+    # Free tier : 10 req/min → attente 7s entre ligues
+    time.sleep(7)
 
+
+def run():
+    for league in LEAGUES:
+        fetch_league_squads(league["code"], league["name"])
     print("\nTerminé.")
 
 

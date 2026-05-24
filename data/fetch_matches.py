@@ -16,8 +16,14 @@ SUPABASE_KEY     = os.getenv("SUPABASE_KEY")
 HEADERS  = {"X-Auth-Token": FOOTBALL_API_KEY}
 BASE_URL = "https://api.football-data.org/v4"
 
-LEAGUE_CODE = "FL1"
-LEAGUE_NAME = "Ligue 1"
+LEAGUES = [
+    {"code": "FL1", "name": "Ligue 1"},
+    {"code": "PL",  "name": "Premier League"},
+    {"code": "PD",  "name": "La Liga"},
+    {"code": "BL1", "name": "Bundesliga"},
+    {"code": "SA",  "name": "Serie A"},
+    {"code": "BSA", "name": "Brasileirão"},  # actif avril-décembre
+]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -25,16 +31,15 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ================================
 # Helpers
 # ================================
-def upsert_team(team_data: dict) -> int:
+def upsert_team(team_data: dict, league_name: str) -> int:
     """Insère ou met à jour une équipe, retourne son id Supabase."""
     name = team_data["name"]
     payload = {
         "name":       name,
         "short_name": team_data.get("shortName", name[:20]),
-        "league":     LEAGUE_NAME,
+        "league":     league_name,
         "logo_url":   team_data.get("crest"),
     }
-    # SELECT first (no unique constraint on name in schema)
     existing = supabase.table("team").select("id").eq("name", name).execute()
     if existing.data:
         team_id = existing.data[0]["id"]
@@ -44,10 +49,8 @@ def upsert_team(team_data: dict) -> int:
     return result.data[0]["id"]
 
 
-def upsert_match(match_data: dict, home_id: int, away_id: int):
+def upsert_match(match_data: dict, home_id: int, away_id: int, league_name: str):
     """Insère ou met à jour un match."""
-    match_date = match_data["utcDate"]
-
     status_map = {
         "SCHEDULED": "upcoming",
         "LIVE":      "upcoming",
@@ -57,70 +60,55 @@ def upsert_match(match_data: dict, home_id: int, away_id: int):
         "CANCELLED": "cancelled",
         "POSTPONED": "cancelled",
     }
-    status = status_map.get(match_data["status"], "upcoming")
+    status    = status_map.get(match_data["status"], "upcoming")
+    full_time = match_data.get("score", {}).get("fullTime", {})
 
-    score     = match_data.get("score", {})
-    full_time = score.get("fullTime", {})
-
-    payload = {
-        "home_team_id": home_id,
-        "away_team_id": away_id,
-        "league":       LEAGUE_NAME,
-        "match_date":   match_date,
-        "status":       status,
-        "score_home":   full_time.get("home"),
-        "score_away":   full_time.get("away"),
-    }
     supabase.table("match").upsert(
-        payload, on_conflict="home_team_id,away_team_id,match_date"
+        {
+            "home_team_id": home_id,
+            "away_team_id": away_id,
+            "league":       league_name,
+            "match_date":   match_data["utcDate"],
+            "status":       status,
+            "score_home":   full_time.get("home"),
+            "score_away":   full_time.get("away"),
+        },
+        on_conflict="home_team_id,away_team_id,match_date",
     ).execute()
+
+
+def fetch_league(league_code: str, league_name: str):
+    print(f"\n=== {league_name} ({league_code}) ===")
+
+    for status_param in ("SCHEDULED", "FINISHED"):
+        response = requests.get(
+            f"{BASE_URL}/competitions/{league_code}/matches",
+            headers=HEADERS,
+            params={"status": status_param},
+        )
+        if response.status_code != 200:
+            print(f"  Erreur {status_param} : {response.status_code} - {response.text}")
+            continue
+
+        matches = response.json().get("matches", [])
+        print(f"  {len(matches)} matchs {status_param}")
+
+        for match in matches:
+            home    = match["homeTeam"]
+            away    = match["awayTeam"]
+            home_id = upsert_team(home, league_name)
+            away_id = upsert_team(away, league_name)
+            upsert_match(match, home_id, away_id, league_name)
+            if status_param == "SCHEDULED":
+                print(f"    {home['name']} vs {away['name']} — {match['utcDate'][:10]}")
 
 
 # ================================
 # Main
 # ================================
 def fetch_and_store_matches():
-    print(f"Récupération des matchs {LEAGUE_NAME}...")
-
-    # Fetch scheduled matches
-    response = requests.get(
-        f"{BASE_URL}/competitions/{LEAGUE_CODE}/matches",
-        headers=HEADERS,
-        params={"status": "SCHEDULED"},
-    )
-    if response.status_code != 200:
-        print(f"Erreur API : {response.status_code} - {response.text}")
-        return
-
-    matches = response.json().get("matches", [])
-    print(f"{len(matches)} matchs trouvés")
-
-    for match in matches:
-        home = match["homeTeam"]
-        away = match["awayTeam"]
-
-        home_id = upsert_team(home)
-        away_id = upsert_team(away)
-        upsert_match(match, home_id, away_id)
-
-        print(f"  {home['name']} vs {away['name']} — {match['utcDate'][:10]}")
-
-    # Also fetch finished matches (for form calculation)
-    response_finished = requests.get(
-        f"{BASE_URL}/competitions/{LEAGUE_CODE}/matches",
-        headers=HEADERS,
-        params={"status": "FINISHED"},
-    )
-    if response_finished.status_code == 200:
-        finished = response_finished.json().get("matches", [])
-        print(f"\n{len(finished)} matchs terminés récupérés")
-        for match in finished:
-            home = match["homeTeam"]
-            away = match["awayTeam"]
-            home_id = upsert_team(home)
-            away_id = upsert_team(away)
-            upsert_match(match, home_id, away_id)
-
+    for league in LEAGUES:
+        fetch_league(league["code"], league["name"])
     print("\nImport terminé !")
 
 
