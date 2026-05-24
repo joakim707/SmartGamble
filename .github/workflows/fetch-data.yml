@@ -1,0 +1,33 @@
+name: Fetch data
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'   # toutes les 12 heures (00:00 et 12:00 UTC)
+  workflow_dispatch:           # déclenchement manuel depuis GitHub
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: data
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install supabase python-dotenv requests aiohttp understat
+
+      - name: Run fetch_all
+        env:
+          SUPABASE_URL:          ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:          ${{ secrets.SUPABASE_KEY }}
+          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+        run: python fetch_all.py
