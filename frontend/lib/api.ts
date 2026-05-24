@@ -88,7 +88,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
 export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
   const { data, error } = await supabase
     .from('player')
-    .select('id, name, position, nationality, shirt_number, photo_url')
+    .select('id, name, position, nationality, shirt_number')
     .eq('team_id', teamId)
     .order('position')
 
@@ -100,6 +100,6 @@ export async function getPlayersByTeam(teamId: number): Promise<Player[]> {
     position: p.position ?? null,
     nationality: p.nationality ?? null,
     shirtNumber: p.shirt_number ?? null,
-    photoUrl: p.photo_url ?? null,
+    photoUrl: null,
   }))
 }

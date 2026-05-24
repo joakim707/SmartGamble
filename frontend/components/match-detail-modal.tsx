@@ -1,8 +1,9 @@
 'use client'
 
-import { Match, Player } from '@/lib/types'
+import { Match } from '@/lib/types'
+import { LineupPlayer } from '@/lib/lineup'
 import { getConfidenceLabel, formatMatchDate, formatMatchTime } from '@/lib/mock-data'
-import { getPlayersByTeam } from '@/lib/api'
+import { getProbableLineup, DEFAULT_SEASON } from '@/lib/lineup'
 import { cn } from '@/lib/utils'
 import {
   Dialog,
@@ -35,8 +36,8 @@ const POSITION_LABEL: Record<string, string> = {
   Forward: 'Attaquants',
 }
 
-function groupByPosition(players: Player[]): Record<string, Player[]> {
-  const groups: Record<string, Player[]> = {}
+function groupByPosition(players: LineupPlayer[]): Record<string, LineupPlayer[]> {
+  const groups: Record<string, LineupPlayer[]> = {}
   for (const p of players) {
     const pos = p.position || 'Autre'
     if (!groups[pos]) groups[pos] = []
@@ -47,16 +48,16 @@ function groupByPosition(players: Player[]): Record<string, Player[]> {
 
 export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps) {
   const [imageError, setImageError] = useState<Record<number, boolean>>({})
-  const [homePlayers, setHomePlayers] = useState<Player[]>([])
-  const [awayPlayers, setAwayPlayers] = useState<Player[]>([])
+  const [homePlayers, setHomePlayers] = useState<LineupPlayer[]>([])
+  const [awayPlayers, setAwayPlayers] = useState<LineupPlayer[]>([])
   const [lineupLoading, setLineupLoading] = useState(false)
 
   useEffect(() => {
     if (!open || !match) return
     setLineupLoading(true)
     Promise.all([
-      getPlayersByTeam(match.homeTeam.id),
-      getPlayersByTeam(match.awayTeam.id),
+      getProbableLineup(match.id, match.homeTeam.id, DEFAULT_SEASON),
+      getProbableLineup(match.id, match.awayTeam.id, DEFAULT_SEASON),
     ]).then(([home, away]) => {
       setHomePlayers(home)
       setAwayPlayers(away)
@@ -68,7 +69,8 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
 
   const confidence = match.confidenceScore ? getConfidenceLabel(match.confidenceScore) : null
   const bookmakers = match.odds?.bookmakers || []
-  const hasLineup = homePlayers.length > 0 || awayPlayers.length > 0
+  const hasLineup  = homePlayers.length > 0 || awayPlayers.length > 0
+  const hasStats   = homePlayers.some(p => p.score > 0) || awayPlayers.some(p => p.score > 0)
 
   const handleImageError = (teamId: number) => {
     setImageError(prev => ({ ...prev, [teamId]: true }))
@@ -76,8 +78,8 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[600px] bg-card border-border p-0 overflow-hidden">
-        <DialogHeader className="p-6 pb-4 border-b border-border">
+      <DialogContent className="sm:max-w-[600px] bg-card border-border p-0 flex flex-col max-h-[90vh]">
+        <DialogHeader className="p-6 pb-4 border-b border-border shrink-0">
           <div className="flex items-center justify-between">
             <DialogTitle className="text-lg font-semibold text-foreground">
               Détail du match
@@ -85,7 +87,7 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
           </div>
         </DialogHeader>
 
-        <div className="p-6 space-y-6">
+        <div className="overflow-y-auto p-6 space-y-6">
           {/* Match Info */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-muted-foreground">
@@ -244,10 +246,12 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
                 <LineupColumn
                   teamName={match.homeTeam.shortName}
                   players={homePlayers}
+                  hasStats={hasStats}
                 />
                 <LineupColumn
                   teamName={match.awayTeam.shortName}
                   players={awayPlayers}
+                  hasStats={hasStats}
                 />
               </div>
             )}
@@ -271,10 +275,11 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
 
 interface LineupColumnProps {
   teamName: string
-  players: Player[]
+  players: LineupPlayer[]
+  hasStats: boolean
 }
 
-function LineupColumn({ teamName, players }: LineupColumnProps) {
+function LineupColumn({ teamName, players, hasStats }: LineupColumnProps) {
   const groups = groupByPosition(players)
   return (
     <div>
@@ -284,18 +289,23 @@ function LineupColumn({ teamName, players }: LineupColumnProps) {
       <div className="space-y-3">
         {POSITION_ORDER.filter(pos => groups[pos]?.length).map(pos => (
           <div key={pos}>
-            <p className="text-[10px] font-medium text-primary uppercase mb-1">
+            <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest mb-1 border-b border-border/40 pb-0.5">
               {POSITION_LABEL[pos]}
             </p>
             <ul className="space-y-1">
               {groups[pos].map(p => (
                 <li key={p.id} className="flex items-center gap-2 text-sm text-foreground">
                   {p.shirtNumber !== null && (
-                    <span className="text-[10px] font-bold text-muted-foreground w-4 text-right">
+                    <span className="text-[10px] font-bold text-muted-foreground w-4 text-right shrink-0">
                       {p.shirtNumber}
                     </span>
                   )}
-                  <span className="truncate">{p.name}</span>
+                  <span className="truncate flex-1">{p.name}</span>
+                  {hasStats && p.score > 0 && (
+                    <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                      {p.score.toFixed(1)}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -303,7 +313,7 @@ function LineupColumn({ teamName, players }: LineupColumnProps) {
         ))}
         {groups['Autre']?.length ? (
           <div>
-            <p className="text-[10px] font-medium text-primary uppercase mb-1">Autres</p>
+            <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest mb-1 border-b border-border/40 pb-0.5">Autres</p>
             <ul className="space-y-1">
               {groups['Autre'].map(p => (
                 <li key={p.id} className="text-sm text-foreground truncate">{p.name}</li>
