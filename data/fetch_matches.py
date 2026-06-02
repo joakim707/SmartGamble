@@ -10,8 +10,8 @@ Flow : pour chaque championnat → pages /events/next/* (à venir)
 import os
 import time
 import argparse
-import requests
 from datetime import datetime, timezone
+from curl_cffi import requests          # imite le fingerprint TLS de Chrome (bypass Cloudflare)
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -25,18 +25,36 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# En-têtes nécessaires pour que SofaScore accepte nos requêtes
-# Sans User-Agent navigateur, l'API renvoie 403
+# En-têtes complets imitant Chrome 124 sur Windows 10.
+# SofaScore est protégé par Cloudflare : sans sec-ch-ua et sec-fetch-*, on reçoit 403.
 SOFA_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept":          "application/json",
-    "Accept-Language": "fr-FR,fr;q=0.9",
-    "Referer":         "https://www.sofascore.com/",
+    "Accept":             "*/*",
+    "Accept-Language":    "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding":    "gzip, deflate, br",
+    "Referer":            "https://www.sofascore.com/",
+    "Origin":             "https://www.sofascore.com",
+    "DNT":                "1",
+    "Connection":         "keep-alive",
+    "Cache-Control":      "no-cache",
+    "Pragma":             "no-cache",
+    # En-têtes Chromium requis par Cloudflare
+    "sec-ch-ua":          '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile":   "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest":     "empty",
+    "sec-fetch-mode":     "cors",
+    "sec-fetch-site":     "same-origin",
 }
+
+# Session curl_cffi : imite Chrome 124 au niveau TLS pour contourner Cloudflare
+# impersonate="chrome124" → fingerprint JA3/JA4 identique à Chrome 124
+_session = requests.Session(impersonate="chrome124")
+_session.headers.update(SOFA_HEADERS)
 
 # IDs SofaScore des championnats — saison 2025/2026
 CHAMPIONNATS_SOFA = {
@@ -125,9 +143,20 @@ def upsert_match(event: dict, home_id: int, away_id: int, league_name: str) -> N
     ).execute()
 
 
+def _warmup_session() -> None:
+    """
+    Visite la page d'accueil SofaScore pour obtenir les cookies Cloudflare (__cf_bm).
+    Non bloquant : si la requête échoue, les appels API se font quand même.
+    """
+    try:
+        _session.get("https://www.sofascore.com/", timeout=10)
+    except Exception:
+        pass
+
+
 def fetch_page(tournament_id: int, season_id: int, page: int, direction: str) -> list:
     """
-    Récupère une page d'événements SofaScore.
+    Récupère une page d'événements SofaScore via la session persistante.
     direction = "next" (à venir) ou "last" (terminés).
     page = 0 pour la plus récente, 1 pour la suivante, etc.
     Retourne une liste d'événements ou [] en cas d'erreur.
@@ -137,13 +166,13 @@ def fetch_page(tournament_id: int, season_id: int, page: int, direction: str) ->
         f"/season/{season_id}/events/{direction}/{page}"
     )
     try:
-        resp = requests.get(url, headers=SOFA_HEADERS, timeout=15)
+        resp = _session.get(url, timeout=15)
     except requests.RequestException as e:
         print(f"    Erreur réseau ({direction}/page {page}) : {e}")
         return []
 
     if resp.status_code == 404:
-        # Plus de pages disponibles
+        # Plus de pages disponibles pour cette direction
         return []
     if resp.status_code != 200:
         print(f"    HTTP {resp.status_code} pour {direction}/page {page}")
@@ -196,6 +225,8 @@ def fetch_league(league_name: str, ids: dict, include_finished: bool) -> None:
 
 def fetch_and_store_matches(include_finished: bool = True) -> None:
     """Parcourt tous les championnats configurés et stocke leurs matchs."""
+    # Initialiser la session pour obtenir les cookies Cloudflare
+    _warmup_session()
     for league_name, ids in CHAMPIONNATS_SOFA.items():
         fetch_league(league_name, ids, include_finished)
     print("\nImport terminé !")

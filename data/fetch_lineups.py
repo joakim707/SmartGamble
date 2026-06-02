@@ -12,7 +12,7 @@ Pré-requis : migration 003 appliquée (colonne sofascore_id sur match et player
 
 import os
 import time
-import requests
+from curl_cffi import requests          # imite le fingerprint TLS de Chrome (bypass Cloudflare)
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -26,17 +26,33 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# En-têtes identiques à fetch_matches.py pour éviter le blocage anti-bot
+# En-têtes complets imitant Chrome 124 — identiques à fetch_matches.py
 SOFA_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept":          "application/json",
-    "Accept-Language": "fr-FR,fr;q=0.9",
-    "Referer":         "https://www.sofascore.com/",
+    "Accept":             "*/*",
+    "Accept-Language":    "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding":    "gzip, deflate, br",
+    "Referer":            "https://www.sofascore.com/",
+    "Origin":             "https://www.sofascore.com",
+    "DNT":                "1",
+    "Connection":         "keep-alive",
+    "Cache-Control":      "no-cache",
+    "Pragma":             "no-cache",
+    "sec-ch-ua":          '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile":   "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest":     "empty",
+    "sec-fetch-mode":     "cors",
+    "sec-fetch-site":     "same-origin",
 }
+
+# Session curl_cffi : imite Chrome 124 au niveau TLS pour contourner Cloudflare
+_session = requests.Session(impersonate="chrome124")
+_session.headers.update(SOFA_HEADERS)
 
 # SofaScore utilise des codes de position à une lettre
 POSITION_MAP = {
@@ -154,7 +170,7 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
     url = f"https://api.sofascore.com/api/v1/event/{sofa_event_id}/lineups"
 
     try:
-        resp = requests.get(url, headers=SOFA_HEADERS, timeout=15)
+        resp = _session.get(url, timeout=15)
     except requests.RequestException as e:
         print(f"    Erreur réseau (event {sofa_event_id}) : {e}")
         return
@@ -185,12 +201,19 @@ def run() -> None:
     Parcourt tous les matchs de la BDD qui ont un sofascore_id
     et récupère leur composition depuis SofaScore.
     """
+    # Filtre PostgREST "not.is.null" → retourne uniquement les matchs avec sofascore_id
     result = (
         supabase.table("match")
         .select("id, sofascore_id, status")
-        .not_("sofascore_id", "is", None)
+        .filter("sofascore_id", "not.is", "null")
         .execute()
     )
+
+    # Initialiser la session pour obtenir les cookies Cloudflare
+    try:
+        _session.get("https://www.sofascore.com/", timeout=10)
+    except requests.RequestException:
+        pass
 
     matches = result.data or []
     print(f"\n{len(matches)} matchs avec sofascore_id trouvés en BDD")
