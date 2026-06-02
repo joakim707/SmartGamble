@@ -1,8 +1,13 @@
 """
-Récupère les effectifs des équipes via football-data.org et les stocke en BDD.
+Récupère les compositions de match depuis SofaScore et les stocke en BDD.
 
-Flow : pour chaque ligue → /v4/competitions/{code}/teams → upsert joueurs dans player
-Note: le champ thesportsdb_id stocke ici les IDs football-data.org (réutilisation du schéma).
+Flow : pour chaque match avec un sofascore_id en BDD
+       → GET /api/v1/event/{sofascore_id}/lineups
+       → upsert joueurs dans 'player' (via sofascore_id)
+       → upsert titulaires + absents dans 'lineup'
+
+Pré-requis : migration 003 appliquée (colonne sofascore_id sur match et player,
+             colonne is_absent sur lineup).
 """
 
 import os
@@ -13,103 +18,193 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL     = os.getenv("SUPABASE_URL")
-SUPABASE_KEY     = os.getenv("SUPABASE_KEY")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
-
-HEADERS  = {"X-Auth-Token": FOOTBALL_API_KEY}
-BASE_URL = "https://api.football-data.org/v4"
-
-LEAGUES = [
-    {"code": "PL",  "name": "Premier League"},
-    {"code": "FL1", "name": "Ligue 1"},
-    {"code": "PD",  "name": "La Liga"},
-    {"code": "BL1", "name": "Bundesliga"},
-    {"code": "SA",  "name": "Serie A"},
-]
-
-# Mapping positions football-data.org → notre convention
-POSITION_MAP = {
-    "Goalkeeper":          "Goalkeeper",
-    "Defence":             "Defender",
-    "Centre-Back":         "Defender",
-    "Left-Back":           "Defender",
-    "Right-Back":          "Defender",
-    "Midfield":            "Midfielder",
-    "Central Midfield":    "Midfielder",
-    "Defensive Midfield":  "Midfielder",
-    "Attacking Midfield":  "Midfielder",
-    "Offence":             "Forward",
-    "Centre-Forward":      "Forward",
-    "Left Winger":         "Forward",
-    "Right Winger":        "Forward",
-}
+# ================================
+# Configuration
+# ================================
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# En-têtes identiques à fetch_matches.py pour éviter le blocage anti-bot
+SOFA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "application/json",
+    "Accept-Language": "fr-FR,fr;q=0.9",
+    "Referer":         "https://www.sofascore.com/",
+}
 
-def upsert_player(player: dict, team_id: int) -> None:
-    raw_pos = player.get("position")
-    shirt   = player.get("shirtNumber")
-    supabase.table("player").upsert(
+# SofaScore utilise des codes de position à une lettre
+POSITION_MAP = {
+    "G": "Goalkeeper",
+    "D": "Defender",
+    "M": "Midfielder",
+    "F": "Forward",
+}
+
+
+# ================================
+# Helpers
+# ================================
+
+def upsert_player(sofa_player: dict, team_id: int) -> int | None:
+    """
+    Insère ou met à jour un joueur via son sofascore_id.
+    Retourne l'id Supabase du joueur, ou None si les données sont incomplètes.
+    """
+    sofa_id  = sofa_player.get("id")
+    # SofaScore fournit "name" (nom complet) et "shortName" (nom court)
+    name     = sofa_player.get("name") or sofa_player.get("shortName", "")
+    pos_code = sofa_player.get("position")
+    position = POSITION_MAP.get(pos_code, pos_code)  # conserve le code original si inconnu
+
+    if not sofa_id or not name:
+        return None
+
+    result = supabase.table("player").upsert(
         {
-            "thesportsdb_id": player["id"],          # football-data.org player ID
-            "team_id":        team_id,
-            "name":           player["name"],
-            "position":       POSITION_MAP.get(raw_pos, raw_pos),
-            "nationality":    player.get("nationality"),
-            "shirt_number":   shirt if isinstance(shirt, int) else None,
+            "sofascore_id": sofa_id,
+            "team_id":      team_id,
+            "name":         name,
+            "position":     position,
         },
-        on_conflict="thesportsdb_id",
+        on_conflict="sofascore_id",
+    ).execute()
+
+    if not result.data:
+        return None
+    return result.data[0]["id"]
+
+
+def upsert_lineup_entry(
+    match_id: int,
+    team_id: int,
+    player_id: int,
+    is_starter: bool,
+    is_absent: bool,
+) -> None:
+    """
+    Insère ou met à jour une ligne de composition pour un match.
+    La clé de conflit (match_id, team_id, player_id) est définie dans la migration 002.
+    """
+    supabase.table("lineup").upsert(
+        {
+            "match_id":   match_id,
+            "team_id":    team_id,
+            "player_id":  player_id,
+            "is_starter": is_starter,
+            "is_absent":  is_absent,
+        },
+        on_conflict="match_id,team_id,player_id",
     ).execute()
 
 
-def fetch_league_squads(league_code: str, league_name: str):
-    print(f"\n=== {league_name} ===")
-    resp = requests.get(
-        f"{BASE_URL}/competitions/{league_code}/teams",
-        headers=HEADERS,
-        timeout=15,
+def resolve_team_id(team_name: str) -> int | None:
+    """
+    Cherche l'id Supabase d'une équipe par son nom exact.
+    Retourne None si l'équipe n'est pas encore en BDD.
+    """
+    result = supabase.table("team").select("id").eq("name", team_name).execute()
+    if not result.data:
+        return None
+    return result.data[0]["id"]
+
+
+def process_side(match_id: int, side_data: dict) -> None:
+    """
+    Traite un côté (home ou away) d'une réponse lineup SofaScore :
+    — upsert les joueurs (titulaires + remplaçants)
+    — upsert les absents (blessés, suspendus, incertains)
+    """
+    team_name = side_data.get("team", {}).get("name", "")
+    team_id   = resolve_team_id(team_name)
+
+    if team_id is None:
+        print(f"    [skip] Équipe inconnue en BDD : {team_name}")
+        return
+
+    # ── Joueurs de la feuille de match (titulaires + remplaçants) ──
+    for entry in side_data.get("players", []):
+        sofa_player = entry.get("player", {})
+        # substitute=False → titulaire, substitute=True → remplaçant
+        is_starter  = not entry.get("substitute", True)
+        player_id   = upsert_player(sofa_player, team_id)
+        if player_id:
+            upsert_lineup_entry(match_id, team_id, player_id, is_starter, is_absent=False)
+
+    # ── Joueurs absents (blessés, suspendus, incertains) ────────────
+    for entry in side_data.get("missingPlayers", []):
+        sofa_player = entry.get("player", {})
+        player_id   = upsert_player(sofa_player, team_id)
+        if player_id:
+            upsert_lineup_entry(match_id, team_id, player_id, is_starter=False, is_absent=True)
+            # Marquer aussi l'absence sur la table player (drapeau global)
+            supabase.table("player").update({"is_absent": True}).eq("id", player_id).execute()
+
+
+def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
+    """
+    Récupère la composition d'un match depuis l'API SofaScore
+    et la stocke en BDD (titulaires + absents pour les deux équipes).
+    """
+    url = f"https://api.sofascore.com/api/v1/event/{sofa_event_id}/lineups"
+
+    try:
+        resp = requests.get(url, headers=SOFA_HEADERS, timeout=15)
+    except requests.RequestException as e:
+        print(f"    Erreur réseau (event {sofa_event_id}) : {e}")
+        return
+
+    if resp.status_code == 404:
+        # Composition pas encore publiée par SofaScore
+        print(f"    Pas de compo disponible pour l'événement {sofa_event_id}")
+        return
+    if resp.status_code != 200:
+        print(f"    HTTP {resp.status_code} pour l'événement {sofa_event_id}")
+        return
+
+    data = resp.json()
+
+    # SofaScore retourne "home" et "away" dans la réponse
+    for side in ("home", "away"):
+        side_data = data.get(side)
+        if side_data:
+            process_side(match_id, side_data)
+
+
+# ================================
+# Point d'entrée
+# ================================
+
+def run() -> None:
+    """
+    Parcourt tous les matchs de la BDD qui ont un sofascore_id
+    et récupère leur composition depuis SofaScore.
+    """
+    result = (
+        supabase.table("match")
+        .select("id, sofascore_id, status")
+        .not_("sofascore_id", "is", None)
+        .execute()
     )
 
-    if resp.status_code == 429:
-        print("  Rate limit, attente 60s...")
-        time.sleep(60)
-        return
+    matches = result.data or []
+    print(f"\n{len(matches)} matchs avec sofascore_id trouvés en BDD")
 
-    if resp.status_code != 200:
-        print(f"  Erreur {resp.status_code} : {resp.text[:120]}")
-        return
+    for match in matches:
+        match_id      = match["id"]
+        sofa_event_id = match["sofascore_id"]
+        status        = match["status"]
+        print(f"  Match {match_id} (sofa:{sofa_event_id}) [{status}]")
 
-    teams = resp.json().get("teams", [])
-    print(f"  {len(teams)} équipes trouvées")
+        fetch_lineups_for_match(match_id, sofa_event_id)
+        time.sleep(0.6)  # Respecter le rate limit SofaScore (~1 req/s)
 
-    for team_data in teams:
-        team_name = team_data["name"]
-        squad     = team_data.get("squad") or []
-
-        result = supabase.table("team").select("id").eq("name", team_name).execute()
-        if not result.data:
-            print(f"  [skip] Équipe inconnue en BDD : {team_name}")
-            continue
-
-        team_id = result.data[0]["id"]
-        print(f"  {team_name} : {len(squad)} joueurs")
-
-        for player in squad:
-            try:
-                upsert_player(player, team_id)
-            except Exception as e:
-                print(f"    Erreur {player.get('name')} : {e}")
-
-    # Free tier : 10 req/min → attente 7s entre ligues
-    time.sleep(7)
-
-
-def run():
-    for league in LEAGUES:
-        fetch_league_squads(league["code"], league["name"])
-    print("\nTerminé.")
+    print("\nCompositions importées !")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,17 @@
+# Dépendances Python du projet SmartGamble
+# Installer avec : pip install -r requirements.txt
+
+# Client HTTP synchrone — utilisé par fetch_matches.py et fetch_lineups.py
+requests>=2.31.0
+
+# Client HTTP asynchrone — utilisé par fetch_stats.py via understat
+aiohttp>=3.9.0
+
+# Client Supabase officiel pour Python
+supabase>=2.0.0
+
+# Chargement des variables d'environnement depuis le fichier .env
+python-dotenv>=1.0.0
+
+# Librairie Understat pour récupérer les stats joueurs (xG, buts, passes)
+understat>=1.0.0
