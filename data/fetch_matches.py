@@ -108,6 +108,49 @@ def upsert_team(team_data: dict, league_name: str) -> int:
     return result.data[0]["id"]
 
 
+def check_migration() -> None:
+    """
+    Vérifie que la migration 003 est correctement appliquée :
+    — colonne sofascore_id présente sur match
+    — contrainte UNIQUE sur sofascore_id (requise pour ON CONFLICT)
+    Arrête le script avec un message clair si un élément manque.
+    """
+    # Test 1 : la colonne sofascore_id existe-t-elle ?
+    try:
+        supabase.table("match").select("sofascore_id").limit(1).execute()
+    except Exception:
+        _migration_error("La colonne sofascore_id est absente de la table match.")
+
+    # Test 2 : la contrainte UNIQUE est-elle présente ?
+    # On teste en faisant un upsert fictif sur on_conflict=sofascore_id
+    try:
+        supabase.table("match").upsert(
+            {"sofascore_id": -1},      # ID négatif → n'existera jamais en BDD
+            on_conflict="sofascore_id",
+        ).execute()
+    except Exception as e:
+        msg = str(e)
+        if "42P10" in msg or "no unique or exclusion constraint" in msg:
+            _migration_error(
+                "La contrainte UNIQUE sur sofascore_id est manquante.\n"
+                "Exécute dans Supabase SQL Editor :\n\n"
+                "  ALTER TABLE match  ADD UNIQUE (sofascore_id);\n"
+                "  ALTER TABLE player ADD UNIQUE (sofascore_id);"
+            )
+        # Autres erreurs (FK, etc.) → pas un problème de migration, on continue
+
+
+def _migration_error(detail: str) -> None:
+    """Affiche le message d'erreur de migration et arrête le script."""
+    print("\n" + "=" * 60)
+    print("ERREUR : migration 003 incomplète")
+    print("=" * 60)
+    print(detail)
+    print("\nMigration complète (db/migrations/003_sofascore_integration.sql)")
+    print("=" * 60)
+    raise SystemExit(1)
+
+
 def upsert_match(event: dict, home_id: int, away_id: int, league_name: str) -> None:
     """
     Insère ou met à jour un match en utilisant sofascore_id comme clé de conflit.
@@ -128,19 +171,31 @@ def upsert_match(event: dict, home_id: int, away_id: int, league_name: str) -> N
     home_score = event.get("homeScore", {}).get("current")
     away_score = event.get("awayScore", {}).get("current")
 
-    supabase.table("match").upsert(
-        {
-            "sofascore_id": event["id"],
-            "home_team_id": home_id,
-            "away_team_id": away_id,
-            "league":       league_name,
-            "match_date":   match_date,
-            "status":       status,
-            "score_home":   home_score,
-            "score_away":   away_score,
-        },
-        on_conflict="sofascore_id",
-    ).execute()
+    payload = {
+        "sofascore_id": event["id"],
+        "home_team_id": home_id,
+        "away_team_id": away_id,
+        "league":       league_name,
+        "match_date":   match_date,
+        "status":       status,
+        "score_home":   home_score,
+        "score_away":   away_score,
+    }
+
+    try:
+        supabase.table("match").upsert(payload, on_conflict="sofascore_id").execute()
+    except Exception as e:
+        if "23505" in str(e):
+            # Un match (home/away/date) existe déjà depuis l'ancien fetch football-data.org
+            # → on lui attribue d'abord son sofascore_id, puis on réessaie l'upsert
+            supabase.table("match").update({"sofascore_id": event["id"]}) \
+                .eq("home_team_id", home_id) \
+                .eq("away_team_id", away_id) \
+                .eq("match_date", match_date) \
+                .execute()
+            supabase.table("match").upsert(payload, on_conflict="sofascore_id").execute()
+        else:
+            raise
 
 
 def _warmup_session() -> None:
@@ -225,7 +280,7 @@ def fetch_league(league_name: str, ids: dict, include_finished: bool) -> None:
 
 def fetch_and_store_matches(include_finished: bool = True) -> None:
     """Parcourt tous les championnats configurés et stocke leurs matchs."""
-    # Initialiser la session pour obtenir les cookies Cloudflare
+    check_migration()
     _warmup_session()
     for league_name, ids in CHAMPIONNATS_SOFA.items():
         fetch_league(league_name, ids, include_finished)

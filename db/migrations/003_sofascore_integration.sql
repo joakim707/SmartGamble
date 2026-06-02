@@ -4,12 +4,12 @@
 -- Ajoute is_absent sur la table lineup (absence spécifique au match)
 
 -- Identifiant SofaScore du match — sert à récupérer les compos via l'API
-ALTER TABLE match
-    ADD COLUMN IF NOT EXISTS sofascore_id INTEGER UNIQUE;
+ALTER TABLE match ADD COLUMN IF NOT EXISTS sofascore_id INTEGER;
+ALTER TABLE match ADD UNIQUE (sofascore_id);          -- séparé car IF NOT EXISTS n'est pas supporté sur ADD CONSTRAINT
 
 -- Identifiant SofaScore du joueur — utilisé comme clé d'upsert dans fetch_lineups.py
-ALTER TABLE player
-    ADD COLUMN IF NOT EXISTS sofascore_id INTEGER UNIQUE;
+ALTER TABLE player ADD COLUMN IF NOT EXISTS sofascore_id INTEGER;
+ALTER TABLE player ADD UNIQUE (sofascore_id);
 
 -- Les joueurs SofaScore n'ont pas de thesportsdb_id : on retire la contrainte NOT NULL
 ALTER TABLE player
