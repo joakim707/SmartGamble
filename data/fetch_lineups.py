@@ -26,7 +26,6 @@ LEAGUES = [
     {"code": "PD",  "name": "La Liga"},
     {"code": "BL1", "name": "Bundesliga"},
     {"code": "SA",  "name": "Serie A"},
-    {"code": "BSA", "name": "Brasileirão"},
 ]
 
 # Mapping positions football-data.org → notre convention
