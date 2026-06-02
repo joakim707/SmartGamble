@@ -22,7 +22,6 @@ LEAGUES = [
     {"code": "PD",  "name": "La Liga"},
     {"code": "BL1", "name": "Bundesliga"},
     {"code": "SA",  "name": "Serie A"},
-    {"code": "BSA", "name": "Brasileirão"},  # actif avril-décembre
 ]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)

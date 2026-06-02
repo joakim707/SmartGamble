@@ -58,7 +58,6 @@ export const LEAGUES: League[] = [
   { id: 'laliga',      name: 'La Liga',        country: 'Spain',   flag: '🇪🇸', logo: '/leagues/laliga.png' },
   { id: 'bundesliga',  name: 'Bundesliga',     country: 'Germany', flag: '🇩🇪', logo: '/leagues/bundesliga.png' },
   { id: 'seriea',      name: 'Serie A',        country: 'Italy',   flag: '🇮🇹', logo: '/leagues/seriea.png' },
-  { id: 'brasileirao', name: 'Brasileirão',    country: 'Brazil',  flag: '🇧🇷', logo: '/leagues/brasileirao.png' },
 ]
 
 export type RiskLevel = 'low' | 'medium' | 'high'

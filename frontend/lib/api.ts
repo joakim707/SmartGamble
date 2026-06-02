@@ -15,6 +15,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     `)
     .eq('status', 'upcoming')
     .gte('match_date', new Date().toISOString())
+    .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
 
   if (matchesError || !matchesData) {
