@@ -2,8 +2,12 @@ import { supabase } from './supabase'
 import { Match, Player } from './types'
 
 export async function getUpcomingMatches(): Promise<Match[]> {
-  // 1. Récupérer les matchs à venir
-  const { data: matchesData, error: matchesError } = await supabase
+  // Mode simulation : pas de matchs à venir en intersaison → on affiche les
+  // 60 derniers jours de matchs terminés pour pouvoir tester les compositions.
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+
+  // 1. Essayer les matchs à venir d'abord
+  let { data: matchesData, error: matchesError } = await supabase
     .from('match')
     .select(`
       id,
@@ -17,6 +21,33 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     .gte('match_date', new Date().toISOString())
     .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
+
+  // Aucun match à venir → mode simulation avec les matchs récents terminés
+  if (!matchesError && (!matchesData || matchesData.length === 0)) {
+    const res = await supabase
+      .from('match')
+      .select(`
+        id,
+        match_date,
+        status,
+        league,
+        home_team:home_team_id(id, name, short_name, logo_url),
+        away_team:away_team_id(id, name, short_name, logo_url)
+      `)
+      .eq('status', 'finished')
+      .gte('match_date', sixtyDaysAgo)
+      .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
+      .order('match_date', { ascending: false })
+      .limit(50)
+
+    matchesData  = res.data
+    matchesError = res.error
+  }
+
+  if (matchesError || !matchesData) {
+    console.error("Erreur Supabase (matchs):", matchesError)
+    return []
+  }
 
   if (matchesError || !matchesData) {
     console.error("Erreur Supabase (matchs):", matchesError)
@@ -70,7 +101,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       id: m.id,
       league: m.league || 'Ligue 1',
       matchDate: m.match_date,
-      status: 'upcoming',
+      status: m.status as Match['status'],
       homeTeam: {
         id: m.home_team.id,
         name: m.home_team.name,
