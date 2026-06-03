@@ -67,16 +67,21 @@ POSITION_MAP = {
 # Helpers
 # ================================
 
-def upsert_player(sofa_player: dict, team_id: int) -> int | None:
+def upsert_player(sofa_player: dict, team_id: int, shirt_number: int | None = None) -> int | None:
     """
     Insère ou met à jour un joueur via son sofascore_id.
+
+    sofa_player : objet "player" imbriqué dans l'entrée SofaScore
+    shirt_number : numéro de maillot, passé depuis l'entrée parente (shirtNumber)
     Retourne l'id Supabase du joueur, ou None si les données sont incomplètes.
     """
     sofa_id  = sofa_player.get("id")
-    # SofaScore fournit "name" (nom complet) et "shortName" (nom court)
     name     = sofa_player.get("name") or sofa_player.get("shortName", "")
     pos_code = sofa_player.get("position")
-    position = POSITION_MAP.get(pos_code, pos_code)  # conserve le code original si inconnu
+    position = POSITION_MAP.get(pos_code, pos_code)
+
+    # La nationalité est dans player.country.name
+    nationality = sofa_player.get("country", {}).get("name")
 
     if not sofa_id or not name:
         return None
@@ -87,6 +92,8 @@ def upsert_player(sofa_player: dict, team_id: int) -> int | None:
             "team_id":      team_id,
             "name":         name,
             "position":     position,
+            "nationality":  nationality,
+            "shirt_number": shirt_number,
         },
         on_conflict="sofascore_id",
     ).execute()
@@ -119,43 +126,43 @@ def upsert_lineup_entry(
     ).execute()
 
 
-def resolve_team_id(team_name: str) -> int | None:
+def get_match_team_ids(match_id: int) -> tuple[int | None, int | None]:
     """
-    Cherche l'id Supabase d'une équipe par son nom exact.
-    Retourne None si l'équipe n'est pas encore en BDD.
+    Récupère les ids Supabase de l'équipe domicile et extérieure pour un match.
+    Plus fiable que de chercher par nom : la réponse lineups SofaScore
+    ne contient pas de champ 'team' dans home/away.
     """
-    result = supabase.table("team").select("id").eq("name", team_name).execute()
+    result = supabase.table("match").select("home_team_id, away_team_id").eq("id", match_id).execute()
     if not result.data:
-        return None
-    return result.data[0]["id"]
+        return None, None
+    row = result.data[0]
+    return row["home_team_id"], row["away_team_id"]
 
 
-def process_side(match_id: int, side_data: dict) -> None:
+def process_side(match_id: int, team_id: int, side_data: dict) -> None:
     """
-    Traite un côté (home ou away) d'une réponse lineup SofaScore :
-    — upsert les joueurs (titulaires + remplaçants)
+    Traite un côté (home ou away) d'une réponse lineup SofaScore.
+    team_id est passé directement depuis le match en BDD (plus fiable que le nom).
+
+    — upsert les joueurs (titulaires + remplaçants) avec numéro et nationalité
     — upsert les absents (blessés, suspendus, incertains)
     """
-    team_name = side_data.get("team", {}).get("name", "")
-    team_id   = resolve_team_id(team_name)
-
-    if team_id is None:
-        print(f"    [skip] Équipe inconnue en BDD : {team_name}")
-        return
-
     # ── Joueurs de la feuille de match (titulaires + remplaçants) ──
     for entry in side_data.get("players", []):
-        sofa_player = entry.get("player", {})
+        sofa_player  = entry.get("player", {})
         # substitute=False → titulaire, substitute=True → remplaçant
-        is_starter  = not entry.get("substitute", True)
-        player_id   = upsert_player(sofa_player, team_id)
+        is_starter   = not entry.get("substitute", True)
+        # shirtNumber est à la racine de l'entrée (entier), pas dans player
+        shirt_number = entry.get("shirtNumber")
+        player_id    = upsert_player(sofa_player, team_id, shirt_number)
         if player_id:
             upsert_lineup_entry(match_id, team_id, player_id, is_starter, is_absent=False)
 
     # ── Joueurs absents (blessés, suspendus, incertains) ────────────
     for entry in side_data.get("missingPlayers", []):
-        sofa_player = entry.get("player", {})
-        player_id   = upsert_player(sofa_player, team_id)
+        sofa_player  = entry.get("player", {})
+        shirt_number = entry.get("shirtNumber")
+        player_id    = upsert_player(sofa_player, team_id, shirt_number)
         if player_id:
             upsert_lineup_entry(match_id, team_id, player_id, is_starter=False, is_absent=True)
             # Marquer aussi l'absence sur la table player (drapeau global)
@@ -185,11 +192,21 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
 
     data = resp.json()
 
-    # SofaScore retourne "home" et "away" dans la réponse
-    for side in ("home", "away"):
+    confirmed = data.get("confirmed", False)
+    if not confirmed:
+        print(f"    Compo non confirmée (event {sofa_event_id})")
+
+    # Récupérer les team_id depuis la BDD (la réponse lineups n'a pas de champ team)
+    home_team_id, away_team_id = get_match_team_ids(match_id)
+    if not home_team_id or not away_team_id:
+        print(f"    [skip] Match {match_id} introuvable en BDD")
+        return
+
+    sides = {"home": home_team_id, "away": away_team_id}
+    for side, team_id in sides.items():
         side_data = data.get(side)
         if side_data:
-            process_side(match_id, side_data)
+            process_side(match_id, team_id, side_data)
 
 
 # ================================
