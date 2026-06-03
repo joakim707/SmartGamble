@@ -137,7 +137,7 @@ async function getRealLineup(
     .from('lineup')
     .select(`
       player:player_id (
-        id, name, position, nationality, shirt_number
+        id, name, position, nationality, shirt_number, sofascore_id
       )
     `)
     .eq('match_id', matchId)
@@ -145,17 +145,23 @@ async function getRealLineup(
     .eq('is_starter', true)
     .eq('is_absent', false)
 
-  // Moins de 10 titulaires → données incomplètes ou vestige de l'algo maison
-  if (!data || data.length < 10) return []
+  if (!data || data.length === 0) return []
 
-  return (data as any[]).map(row => ({
+  // Ne garder que les joueurs SofaScore (sofascore_id non null).
+  // Les joueurs de l'ancien algo (football-data.org) n'ont pas de sofascore_id.
+  const sofascorePlayers = (data as any[]).filter(row => row.player?.sofascore_id != null)
+
+  // Moins de 10 → compo SofaScore pas encore disponible pour ce match
+  if (sofascorePlayers.length < 10) return []
+
+  return sofascorePlayers.map(row => ({
     id:          row.player.id,
     name:        row.player.name,
     position:    row.player.position ?? null,
     nationality: row.player.nationality ?? null,
     shirtNumber: row.player.shirt_number ?? null,
     photoUrl:    null,
-    score:       0,  // Le score est calculé séparément via getKeyPlayers
+    score:       0,
   }))
 }
 
