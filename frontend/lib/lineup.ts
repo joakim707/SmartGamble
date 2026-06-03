@@ -126,7 +126,8 @@ function selectEleven(pool: LineupPlayer[]): LineupPlayer[] {
 /**
  * Retourne les titulaires d'une équipe pour un match donné,
  * tels que stockés par fetch_lineups.py depuis SofaScore.
- * Retourne [] si la composition n'est pas encore en BDD.
+ * Retourne [] si la composition n'est pas en BDD ou incomplète (< 10 joueurs).
+ * Le seuil de 10 distingue une vraie compo SofaScore d'un vestige de l'algo maison.
  */
 async function getRealLineup(
   matchId: number,
@@ -144,7 +145,8 @@ async function getRealLineup(
     .eq('is_starter', true)
     .eq('is_absent', false)
 
-  if (!data || data.length === 0) return []
+  // Moins de 10 titulaires → données incomplètes ou vestige de l'algo maison
+  if (!data || data.length < 10) return []
 
   return (data as any[]).map(row => ({
     id:          row.player.id,

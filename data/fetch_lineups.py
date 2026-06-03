@@ -202,6 +202,10 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
         print(f"    [skip] Match {match_id} introuvable en BDD")
         return
 
+    # Supprimer les anciennes entrées de l'algo maison avant d'insérer les vraies
+    # compos SofaScore — évite de mélanger les deux sources dans la table lineup
+    supabase.table("lineup").delete().eq("match_id", match_id).execute()
+
     sides = {"home": home_team_id, "away": away_team_id}
     for side, team_id in sides.items():
         side_data = data.get(side)
