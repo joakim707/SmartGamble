@@ -166,75 +166,17 @@ async function getRealLineup(
 }
 
 /**
- * Point d'entrée pour la composition d'une équipe.
- * Priorité 1 : données SofaScore en BDD (is_starter=true).
- * Priorité 2 : algorithme maison (fallback si SofaScore pas encore disponible).
+ * Retourne la composition SofaScore d'une équipe pour un match.
+ * Retourne [] si la compo n'est pas encore disponible (fetch_lineups pas encore passé).
+ * L'algo maison n'est plus utilisé pour générer la compo — uniquement pour les
+ * joueurs clés (getKeyPlayers) et l'impact des absents (getAbsentImpact).
  */
 export async function getProbableLineup(
   matchId: number,
   teamId: number,
   season = DEFAULT_SEASON,
 ): Promise<LineupPlayer[]> {
-
-  // 1. Tenter de lire la composition SofaScore depuis la BDD
-  const realLineup = await getRealLineup(matchId, teamId)
-  if (realLineup.length > 0) return realLineup
-
-  // 2. Fallback algorithme maison (si SofaScore pas encore publié la compo)
-  const { data: players } = await supabase
-    .from('player')
-    .select('id, name, position, nationality, shirt_number')
-    .eq('team_id', teamId)
-    .eq('is_absent', false)
-
-  if (!players || players.length === 0) return []
-
-  const ids = players.map(p => p.id)
-  const { data: statsRows } = await supabase
-    .from('player_stats')
-    .select('player_id, minutes_played, goals, assists')
-    .in('player_id', ids)
-    .eq('season', season)
-
-  const statsMap = new Map<number, RawStats>()
-  for (const s of statsRows ?? []) {
-    statsMap.set(s.player_id, {
-      minutes_played: s.minutes_played,
-      goals:          s.goals,
-      assists:        s.assists,
-    })
-  }
-
-  const scored: LineupPlayer[] = players.map(p => ({
-    id:          p.id,
-    name:        p.name,
-    position:    p.position ?? null,
-    nationality: p.nationality ?? null,
-    shirtNumber: p.shirt_number ?? null,
-    photoUrl:    null,
-    score:       computeScore(
-      p.position,
-      statsMap.get(p.id) ?? { minutes_played: 0, goals: 0, assists: 0 },
-    ),
-  }))
-
-  const starters = selectEleven(scored)
-
-  if (starters.length > 0) {
-    await supabase.from('lineup').upsert(
-      starters.map(p => ({
-        match_id:   matchId,
-        team_id:    teamId,
-        player_id:  p.id,
-        is_starter: true,
-        is_absent:  false,
-        score:      p.score,
-      })),
-      { onConflict: 'match_id,team_id,player_id' },
-    )
-  }
-
-  return starters
+  return getRealLineup(matchId, teamId)
 }
 
 // ─── B) Joueurs clés ─────────────────────────────────────────────────────────
