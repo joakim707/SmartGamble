@@ -58,11 +58,11 @@ _session.headers.update(SOFA_HEADERS)
 
 # IDs SofaScore des championnats — saison 2025/2026
 CHAMPIONNATS_SOFA = {
-    "Premier League": {"tournament_id": 17, "season_id": 76986},
-    "Ligue 1":        {"tournament_id": 34, "season_id": 77356},
-    "La Liga":        {"tournament_id": 8,  "season_id": 77559},
-    "Serie A":        {"tournament_id": 23, "season_id": 76457},
-    "Bundesliga":     {"tournament_id": 35, "season_id": 77333},
+    "Premier League": {"tournament_id": 17, "season_id": 76986, "slug": "football/england/premier-league/17"},
+    "Ligue 1":        {"tournament_id": 34, "season_id": 77356, "slug": "football/france/ligue-1/34"},
+    "La Liga":        {"tournament_id": 8,  "season_id": 77559, "slug": "football/spain/laliga/8"},
+    "Serie A":        {"tournament_id": 23, "season_id": 76457, "slug": "football/italy/serie-a/23"},
+    "Bundesliga":     {"tournament_id": 35, "season_id": 77333, "slug": "football/germany/bundesliga/35"},
 }
 
 # Correspondance statut SofaScore → notre convention
@@ -201,10 +201,11 @@ def upsert_match(event: dict, home_id: int, away_id: int, league_name: str) -> N
 def _warmup_session() -> None:
     """
     Visite la page d'accueil SofaScore pour obtenir les cookies Cloudflare (__cf_bm).
-    Non bloquant : si la requête échoue, les appels API se font quand même.
+    Attend 2 secondes pour laisser le temps aux cookies de s'établir.
     """
     try:
         _session.get("https://www.sofascore.com/", timeout=10)
+        time.sleep(2)
     except Exception:
         pass
 
@@ -227,9 +228,20 @@ def fetch_page(tournament_id: int, season_id: int, page: int, direction: str) ->
         return []
 
     if resp.status_code == 404:
-        # Plus de pages disponibles pour cette direction
         return []
-    if resp.status_code != 200:
+    if resp.status_code == 403:
+        # Cookie Cloudflare expiré → re-warmup et un seul retry
+        print(f"    403 -> re-warmup session ({direction}/page {page})")
+        _warmup_session()
+        try:
+            resp = _session.get(url, timeout=15)
+        except requests.RequestException as e:
+            print(f"    Erreur réseau après warmup : {e}")
+            return []
+        if resp.status_code != 200:
+            print(f"    HTTP {resp.status_code} après warmup, page ignorée")
+            return []
+    elif resp.status_code != 200:
         print(f"    HTTP {resp.status_code} pour {direction}/page {page}")
         return []
 
@@ -244,7 +256,18 @@ def fetch_league(league_name: str, ids: dict, include_finished: bool) -> None:
     print(f"\n=== {league_name} ===")
     tid   = ids["tournament_id"]
     sid   = ids["season_id"]
+    slug  = ids.get("slug", "")
     total = 0
+
+    # Visite la page du championnat pour obtenir les cookies Cloudflare spécifiques
+    try:
+        league_url = f"https://www.sofascore.com/tournament/{slug}"
+        _session.headers.update({"Referer": "https://www.sofascore.com/"})
+        _session.get(league_url, timeout=10)
+        _session.headers.update({"Referer": league_url})
+        time.sleep(2)
+    except Exception:
+        pass
 
     # ── Matchs à venir ──────────────────────────────────────────────
     for page in range(10):
@@ -260,7 +283,7 @@ def fetch_league(league_name: str, ids: dict, include_finished: bool) -> None:
 
     # ── Matchs terminés (données historiques pour l'algo) ───────────
     if include_finished:
-        for page in range(15):
+        for page in range(30):
             events = fetch_page(tid, sid, page, "last")
             if not events:
                 break

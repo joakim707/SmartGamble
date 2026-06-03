@@ -133,33 +133,39 @@ async function getRealLineup(
   matchId: number,
   teamId: number,
 ): Promise<LineupPlayer[]> {
-  const { data } = await supabase
+  // Étape 1 : récupérer les player_id titulaires pour ce match/équipe
+  const { data: lineupRows } = await supabase
     .from('lineup')
-    .select(`
-      player:player_id (
-        id, name, position, nationality, shirt_number, sofascore_id
-      )
-    `)
+    .select('player_id')
     .eq('match_id', matchId)
     .eq('team_id', teamId)
     .eq('is_starter', true)
     .eq('is_absent', false)
 
-  if (!data || data.length === 0) return []
+  if (!lineupRows || lineupRows.length === 0) return []
 
-  // Ne garder que les joueurs SofaScore (sofascore_id non null).
-  // Les joueurs de l'ancien algo (football-data.org) n'ont pas de sofascore_id.
-  const sofascorePlayers = (data as any[]).filter(row => row.player?.sofascore_id != null)
+  const playerIds = lineupRows.map((r: any) => r.player_id)
+
+  // Étape 2 : récupérer les détails des joueurs
+  const { data: players } = await supabase
+    .from('player')
+    .select('id, name, position, nationality, shirt_number, sofascore_id')
+    .in('id', playerIds)
+
+  if (!players) return []
+
+  // Ne garder que les joueurs SofaScore (sofascore_id non null)
+  const sofascorePlayers = players.filter(p => p.sofascore_id != null)
 
   // Moins de 10 → compo SofaScore pas encore disponible pour ce match
   if (sofascorePlayers.length < 10) return []
 
-  return sofascorePlayers.map(row => ({
-    id:          row.player.id,
-    name:        row.player.name,
-    position:    row.player.position ?? null,
-    nationality: row.player.nationality ?? null,
-    shirtNumber: row.player.shirt_number ?? null,
+  return sofascorePlayers.map(p => ({
+    id:          p.id,
+    name:        p.name,
+    position:    p.position ?? null,
+    nationality: p.nationality ?? null,
+    shirtNumber: p.shirt_number ?? null,
     photoUrl:    null,
     score:       0,
   }))
@@ -248,21 +254,25 @@ export async function getAbsentImpact(
   season = DEFAULT_SEASON,
 ): Promise<KeyPlayer[]> {
 
-  // Lire les absents depuis la table lineup (spécifique au match)
-  const { data: absentRows } = await supabase
+  // Étape 1 : récupérer les player_id absents pour ce match/équipe
+  const { data: absentLineup } = await supabase
     .from('lineup')
-    .select(`
-      player:player_id (
-        id, name, position, nationality, shirt_number
-      )
-    `)
+    .select('player_id')
     .eq('match_id', matchId)
     .eq('team_id', teamId)
     .eq('is_absent', true)
 
-  if (!absentRows || absentRows.length === 0) return []
+  if (!absentLineup || absentLineup.length === 0) return []
 
-  const playerIds = (absentRows as any[]).map(r => r.player.id)
+  const playerIds = absentLineup.map((r: any) => r.player_id)
+
+  // Étape 2 : détails des joueurs absents
+  const { data: absentPlayers } = await supabase
+    .from('player')
+    .select('id, name, position, nationality, shirt_number')
+    .in('id', playerIds)
+
+  if (!absentPlayers || absentPlayers.length === 0) return []
 
   const { data: statsRows } = await supabase
     .from('player_stats')
@@ -279,20 +289,19 @@ export async function getAbsentImpact(
     })
   }
 
-  return (absentRows as any[]).map(row => {
+  return absentPlayers.map(p => {
     const score = computeScore(
-      row.player.position,
-      statsMap.get(row.player.id) ?? { minutes_played: 0, goals: 0, assists: 0 },
+      p.position,
+      statsMap.get(p.id) ?? { minutes_played: 0, goals: 0, assists: 0 },
     )
     return {
-      id:             row.player.id,
-      name:           row.player.name,
-      position:       row.player.position ?? null,
-      nationality:    row.player.nationality ?? null,
-      shirtNumber:    row.player.shirt_number ?? null,
+      id:             p.id,
+      name:           p.name,
+      position:       p.position ?? null,
+      nationality:    p.nationality ?? null,
+      shirtNumber:    p.shirt_number ?? null,
       photoUrl:       null,
       score,
-      // Une absence est "impactante" si le joueur a un score élevé
       isImpactAbsent: score >= IMPACT_THRESHOLD,
     }
   })

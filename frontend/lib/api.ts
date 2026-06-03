@@ -22,7 +22,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
 
-  // Aucun match à venir → mode simulation avec les matchs récents terminés
+  // Aucun match à venir → mode simulation : matchs du 1er jan. au 29 mai 2026
   if (!matchesError && (!matchesData || matchesData.length === 0)) {
     const res = await supabase
       .from('match')
@@ -35,10 +35,11 @@ export async function getUpcomingMatches(): Promise<Match[]> {
         away_team:away_team_id(id, name, short_name, logo_url)
       `)
       .eq('status', 'finished')
-      .gte('match_date', sixtyDaysAgo)
+      .gte('match_date', '2026-01-01T00:00:00')
+      .lte('match_date', '2026-05-29T23:59:59')
       .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
       .order('match_date', { ascending: false })
-      .limit(50)
+      .limit(200)
 
     matchesData  = res.data
     matchesError = res.error

@@ -26,6 +26,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+
+def _reconnect_supabase() -> None:
+    """Recrée le client Supabase pour réinitialiser le pool de connexions HTTP/2."""
+    global supabase
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # En-têtes complets imitant Chrome 124 — identiques à fetch_matches.py
 SOFA_HEADERS = {
     "User-Agent": (
@@ -53,6 +59,15 @@ SOFA_HEADERS = {
 # Session curl_cffi : imite Chrome 124 au niveau TLS pour contourner Cloudflare
 _session = requests.Session(impersonate="chrome124")
 _session.headers.update(SOFA_HEADERS)
+
+
+def _warmup_session() -> None:
+    """Visite sofascore.com pour renouveler le cookie __cf_bm (TTL ~30 min)."""
+    try:
+        _session.get("https://www.sofascore.com/", timeout=10)
+        time.sleep(1)
+    except requests.RequestException:
+        pass
 
 # SofaScore utilise des codes de position à une lettre
 POSITION_MAP = {
@@ -186,7 +201,19 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
         # Composition pas encore publiée par SofaScore
         print(f"    Pas de compo disponible pour l'événement {sofa_event_id}")
         return
-    if resp.status_code != 200:
+    if resp.status_code == 403:
+        # Cookie Cloudflare expiré → re-warmup et un seul retry
+        print(f"    403 → re-warmup session (event {sofa_event_id})")
+        _warmup_session()
+        try:
+            resp = _session.get(url, timeout=15)
+        except requests.RequestException as e:
+            print(f"    Erreur réseau après warmup : {e}")
+            return
+        if resp.status_code != 200:
+            print(f"    HTTP {resp.status_code} après warmup, event ignoré")
+            return
+    elif resp.status_code != 200:
         print(f"    HTTP {resp.status_code} pour l'événement {sofa_event_id}")
         return
 
@@ -239,13 +266,36 @@ def run() -> None:
     matches = result.data or []
     print(f"\n{len(matches)} matchs avec sofascore_id trouvés en BDD")
 
-    for match in matches:
+    for i, match in enumerate(matches):
         match_id      = match["id"]
         sofa_event_id = match["sofascore_id"]
         status        = match["status"]
         print(f"  Match {match_id} (sofa:{sofa_event_id}) [{status}]")
 
-        fetch_lineups_for_match(match_id, sofa_event_id)
+        # Reconnexion Supabase préventive toutes les 80 itérations
+        if i > 0 and i % 80 == 0:
+            print("  [reconnexion Supabase préventive]")
+            _reconnect_supabase()
+
+        # Re-warmup Cloudflare toutes les 50 requêtes (cookie __cf_bm TTL ~30 min)
+        if i > 0 and i % 50 == 0:
+            print("  [re-warmup session SofaScore]")
+            _warmup_session()
+
+        try:
+            fetch_lineups_for_match(match_id, sofa_event_id)
+        except Exception as e:
+            err = str(e)
+            if "RemoteProtocolError" in err or "ConnectionTerminated" in err or "RemoteProtocolError" in type(e).__name__:
+                print(f"  [reconnexion Supabase après erreur HTTP/2] {e}")
+                _reconnect_supabase()
+                try:
+                    fetch_lineups_for_match(match_id, sofa_event_id)
+                except Exception as e2:
+                    print(f"  [échec après reconnexion, match ignoré] {e2}")
+            else:
+                print(f"  [erreur inattendue, match ignoré] {e}")
+
         time.sleep(0.6)  # Respecter le rate limit SofaScore (~1 req/s)
 
     print("\nCompositions importées !")
