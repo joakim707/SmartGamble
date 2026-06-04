@@ -294,8 +294,18 @@ def run() -> None:
     print(f"\n{len(matches)} matchs terminés avec sofascore_id")
 
     # Match IDs qui ont déjà des compositions → skip
-    existing_res = supabase.table("lineup").select("match_id").execute()
-    already_done = {row["match_id"] for row in (existing_res.data or [])}
+    # Paginer la table lineup (default limit Supabase = 1000 lignes, ~22 matchs seulement)
+    already_done: set[int] = set()
+    offset = 0
+    while True:
+        page = supabase.table("lineup").select("match_id").range(offset, offset + 999).execute()
+        if not page.data:
+            break
+        for row in page.data:
+            already_done.add(row["match_id"])
+        if len(page.data) < 1000:
+            break
+        offset += 1000
     print(f"{len(already_done)} matchs déjà en BDD, ignorés")
 
     # Grouper par championnat pour le warmup par ligue

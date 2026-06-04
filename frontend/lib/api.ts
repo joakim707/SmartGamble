@@ -22,32 +22,44 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
 
-  // Aucun match à venir → mode simulation : matchs du 1er jan. au 29 mai 2026
+  // Aucun match à venir → mode simulation : matchs avec compos, Ligue 1 en premier
   if (!matchesError && (!matchesData || matchesData.length === 0)) {
-    const res = await supabase
-      .from('match')
-      .select(`
-        id,
-        match_date,
-        status,
-        league,
-        home_team:home_team_id(id, name, short_name, logo_url),
-        away_team:away_team_id(id, name, short_name, logo_url)
-      `)
-      .eq('status', 'finished')
-      .gte('match_date', '2026-01-01T00:00:00')
-      .lte('match_date', '2026-05-29T23:59:59')
-      .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
-      .order('match_date', { ascending: false })
-      .limit(200)
+    const simSelect = `
+      id,
+      match_date,
+      status,
+      league,
+      home_team:home_team_id(id, name, short_name, logo_url),
+      away_team:away_team_id(id, name, short_name, logo_url),
+      lineup!inner(id)
+    `
+    const [ligue1Res, othersRes] = await Promise.all([
+      supabase.from('match')
+        .select(simSelect)
+        .eq('status', 'finished')
+        .eq('league', 'Ligue 1')
+        .gte('match_date', '2026-01-01T00:00:00')
+        .lte('match_date', '2026-05-29T23:59:59')
+        .order('match_date', { ascending: false })
+        .limit(50),
+      supabase.from('match')
+        .select(simSelect)
+        .eq('status', 'finished')
+        .in('league', ['Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
+        .gte('match_date', '2026-01-01T00:00:00')
+        .lte('match_date', '2026-05-29T23:59:59')
+        .order('match_date', { ascending: false })
+        .limit(50),
+    ])
 
-    matchesData  = res.data
-    matchesError = res.error
-  }
-
-  if (matchesError || !matchesData) {
-    console.error("Erreur Supabase (matchs):", matchesError)
-    return []
+    // lineup!inner duplique les lignes (une par entrée lineup) → déduplication par id
+    const seen = new Set<number>()
+    matchesData = [...(ligue1Res.data || []), ...(othersRes.data || [])].filter((m: any) => {
+      if (seen.has(m.id)) return false
+      seen.add(m.id)
+      return true
+    })
+    matchesError = ligue1Res.error || othersRes.error
   }
 
   if (matchesError || !matchesData) {
