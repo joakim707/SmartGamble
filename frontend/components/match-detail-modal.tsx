@@ -372,7 +372,20 @@ function LineupColumn({ teamName, players, hasStats }: LineupColumnProps) {
   )
 }
 
-// Affiche les 3 joueurs les plus importants d'une équipe (score le plus élevé)
+const POSITION_SHORT: Record<string, string> = {
+  Goalkeeper: 'GK',
+  Defender:   'DEF',
+  Midfielder: 'MIL',
+  Forward:    'ATT',
+}
+const POSITION_COLOR: Record<string, string> = {
+  Goalkeeper: 'bg-yellow-500/20 text-yellow-400',
+  Defender:   'bg-blue-500/20 text-blue-400',
+  Midfielder: 'bg-green-500/20 text-green-400',
+  Forward:    'bg-red-500/20 text-red-400',
+}
+
+// Affiche les 3 joueurs les plus régulièrement titulaires (score = nb de titularisations)
 function KeyPlayersColumn({ teamName, players }: { teamName: string; players: KeyPlayer[] }) {
   if (players.length === 0) return (
     <div>
@@ -387,7 +400,6 @@ function KeyPlayersColumn({ teamName, players }: { teamName: string; players: Ke
       <ul className="space-y-1.5">
         {players.map((p, i) => (
           <li key={p.id} className="flex items-center gap-2">
-            {/* Médaille 1er / 2e / 3e */}
             <span className={cn(
               "text-[10px] font-bold w-4 text-center shrink-0",
               i === 0 && "text-yellow-500",
@@ -396,8 +408,16 @@ function KeyPlayersColumn({ teamName, players }: { teamName: string; players: Ke
             )}>
               {i + 1}
             </span>
+            {p.position && (
+              <span className={cn(
+                "px-1 py-0.5 text-[9px] font-bold rounded shrink-0",
+                POSITION_COLOR[p.position] ?? 'bg-muted text-muted-foreground',
+              )}>
+                {POSITION_SHORT[p.position] ?? p.position.slice(0, 3).toUpperCase()}
+              </span>
+            )}
             <span className="text-sm text-foreground truncate flex-1">{p.name}</span>
-            <span className="text-[10px] text-muted-foreground/70 shrink-0">{p.score.toFixed(0)}pts</span>
+            <span className="text-[10px] text-muted-foreground/70 shrink-0">{p.score} matchs</span>
           </li>
         ))}
       </ul>

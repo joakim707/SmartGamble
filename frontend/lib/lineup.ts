@@ -188,112 +188,112 @@ export async function getProbableLineup(
 // ─── B) Joueurs clés ─────────────────────────────────────────────────────────
 
 /**
- * Retourne les 3 joueurs avec le score le plus élevé dans l'effectif.
- * Utilisé pour mettre en avant les stars de chaque équipe dans la modal.
- * Ne tient pas compte de l'absence (un joueur clé peut être absent).
+ * Retourne les 3 joueurs les plus régulièrement titulaires pour cette équipe.
+ * Le score = nombre de titularisations dans nos données (proxy de l'importance).
  */
 export async function getKeyPlayers(
   teamId: number,
-  season = DEFAULT_SEASON,
+  season = DEFAULT_SEASON, // conservé pour compatibilité API, non utilisé
 ): Promise<KeyPlayer[]> {
+
+  // Toutes les titularisations pour cette équipe
+  const { data: rows } = await supabase
+    .from('lineup')
+    .select('player_id')
+    .eq('team_id', teamId)
+    .eq('is_starter', true)
+    .eq('is_absent', false)
+
+  if (!rows || rows.length === 0) return []
+
+  // Compter les titularisations par joueur
+  const counts = new Map<number, number>()
+  for (const r of rows) {
+    counts.set(r.player_id, (counts.get(r.player_id) ?? 0) + 1)
+  }
+
+  // Top 3 par nombre de titularisations
+  const topIds = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([id]) => id)
+
+  if (topIds.length === 0) return []
 
   const { data: players } = await supabase
     .from('player')
     .select('id, name, position, nationality, shirt_number')
-    .eq('team_id', teamId)
+    .in('id', topIds)
 
-  if (!players || players.length === 0) return []
+  if (!players) return []
 
-  const ids = players.map(p => p.id)
-  const { data: statsRows } = await supabase
-    .from('player_stats')
-    .select('player_id, minutes_played, goals, assists')
-    .in('player_id', ids)
-    .eq('season', season)
-
-  const statsMap = new Map<number, RawStats>()
-  for (const s of statsRows ?? []) {
-    statsMap.set(s.player_id, {
-      minutes_played: s.minutes_played,
-      goals:          s.goals,
-      assists:        s.assists,
+  return topIds
+    .map(id => {
+      const p = players.find(pl => pl.id === id)
+      if (!p) return null
+      return {
+        id:             p.id,
+        name:           p.name,
+        position:       p.position ?? null,
+        nationality:    p.nationality ?? null,
+        shirtNumber:    p.shirt_number ?? null,
+        photoUrl:       null,
+        score:          counts.get(id)!,
+        isImpactAbsent: false,
+      }
     })
-  }
-
-  // On filtre les joueurs sans stats (pas de données = pas de score calculable)
-  return players
-    .map(p => ({
-      id:             p.id,
-      name:           p.name,
-      position:       p.position ?? null,
-      nationality:    p.nationality ?? null,
-      shirtNumber:    p.shirt_number ?? null,
-      photoUrl:       null,
-      score:          computeScore(
-        p.position,
-        statsMap.get(p.id) ?? { minutes_played: 0, goals: 0, assists: 0 },
-      ),
-      isImpactAbsent: false,
-    }))
-    .filter(p => p.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
+    .filter(Boolean) as KeyPlayer[]
 }
 
 // ─── C) Impact des absents ───────────────────────────────────────────────────
 
 /**
- * Retourne les joueurs absents pour CE match (table lineup, is_absent=true)
- * avec leur score calculé et un drapeau "isImpactAbsent" si leur score
- * dépasse le seuil IMPACT_THRESHOLD.
- * Un joueur marqué comme impactant devrait afficher un avertissement dans l'UI.
+ * Retourne les joueurs absents pour CE match avec leur nombre habituel de
+ * titularisations comme mesure d'impact.
+ * isImpactAbsent = true si le joueur était titulaire régulier (≥ 3 fois en BDD).
  */
 export async function getAbsentImpact(
   matchId: number,
   teamId: number,
-  season = DEFAULT_SEASON,
+  season = DEFAULT_SEASON, // conservé pour compatibilité API, non utilisé
 ): Promise<KeyPlayer[]> {
 
-  // Étape 1 : récupérer les player_id absents pour ce match/équipe
-  const { data: absentLineup } = await supabase
+  // Étape 1 : joueurs absents pour CE match
+  const { data: absentRows } = await supabase
     .from('lineup')
     .select('player_id')
     .eq('match_id', matchId)
     .eq('team_id', teamId)
     .eq('is_absent', true)
 
-  if (!absentLineup || absentLineup.length === 0) return []
+  if (!absentRows || absentRows.length === 0) return []
 
-  const playerIds = absentLineup.map((r: any) => r.player_id)
+  const absentIds = absentRows.map((r: any) => r.player_id)
 
-  // Étape 2 : détails des joueurs absents
-  const { data: absentPlayers } = await supabase
-    .from('player')
-    .select('id, name, position, nationality, shirt_number')
-    .in('id', playerIds)
+  // Étape 2 : compter les titularisations habituelles de chaque absent
+  const { data: starterRows } = await supabase
+    .from('lineup')
+    .select('player_id')
+    .eq('team_id', teamId)
+    .eq('is_starter', true)
+    .eq('is_absent', false)
+    .in('player_id', absentIds)
 
-  if (!absentPlayers || absentPlayers.length === 0) return []
-
-  const { data: statsRows } = await supabase
-    .from('player_stats')
-    .select('player_id, minutes_played, goals, assists')
-    .in('player_id', playerIds)
-    .eq('season', season)
-
-  const statsMap = new Map<number, RawStats>()
-  for (const s of statsRows ?? []) {
-    statsMap.set(s.player_id, {
-      minutes_played: s.minutes_played,
-      goals:          s.goals,
-      assists:        s.assists,
-    })
+  const startCounts = new Map<number, number>()
+  for (const r of starterRows ?? []) {
+    startCounts.set(r.player_id, (startCounts.get(r.player_id) ?? 0) + 1)
   }
 
-  return absentPlayers.map(p => {
-    const score = computeScore(
-      p.position,
-      statsMap.get(p.id) ?? { minutes_played: 0, goals: 0, assists: 0 },
-    )
+  // Étape 3 : détails des joueurs absents
+  const { data: players } = await supabase
+    .from('player')
+    .select('id, name, position, nationality, shirt_number')
+    .in('id', absentIds)
+
+  if (!players) return []
+
+  return players.map(p => {
+    const starts = startCounts.get(p.id) ?? 0
     return {
       id:             p.id,
       name:           p.name,
@@ -301,8 +301,8 @@ export async function getAbsentImpact(
       nationality:    p.nationality ?? null,
       shirtNumber:    p.shirt_number ?? null,
       photoUrl:       null,
-      score,
-      isImpactAbsent: score >= IMPACT_THRESHOLD,
+      score:          starts,
+      isImpactAbsent: starts >= 3,
     }
   })
 }

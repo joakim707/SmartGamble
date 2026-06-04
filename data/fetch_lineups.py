@@ -293,22 +293,41 @@ def run() -> None:
     matches = result.data or []
     print(f"\n{len(matches)} matchs terminés avec sofascore_id")
 
-    # Match IDs qui ont DÉJÀ de vraies compos SofaScore (joueur avec sofascore_id).
-    # Les matchs avec seulement des compos algo (sofascore_id null) sont re-traités.
-    already_done: set[int] = set()
+    # Étape 1 : IDs des joueurs ayant un sofascore_id (vrais joueurs SofaScore)
+    sofa_player_ids: set[int] = set()
     offset = 0
     while True:
         page = (
-            supabase.table("lineup")
-            .select("match_id, player:player_id(sofascore_id)")
+            supabase.table("player")
+            .select("id")
+            .filter("sofascore_id", "not.is", "null")
             .range(offset, offset + 999)
             .execute()
         )
         if not page.data:
             break
         for row in page.data:
-            player_data = row.get("player") or {}
-            if player_data.get("sofascore_id") is not None:
+            sofa_player_ids.add(row["id"])
+        if len(page.data) < 1000:
+            break
+        offset += 1000
+    print(f"{len(sofa_player_ids)} joueurs SofaScore en BDD")
+
+    # Étape 2 : Match IDs ayant au moins un joueur SofaScore → skip (déjà traités)
+    # Les matchs avec seulement des compos algo (player.sofascore_id null) sont re-traités.
+    already_done: set[int] = set()
+    offset = 0
+    while True:
+        page = (
+            supabase.table("lineup")
+            .select("match_id, player_id")
+            .range(offset, offset + 999)
+            .execute()
+        )
+        if not page.data:
+            break
+        for row in page.data:
+            if row["player_id"] in sofa_player_ids:
                 already_done.add(row["match_id"])
         if len(page.data) < 1000:
             break
