@@ -1,10 +1,9 @@
 'use client'
 
-import { Match, Player } from '@/lib/types'
-import { LineupPlayer } from '@/lib/lineup'
+import { Match } from '@/lib/types'
+import { LineupPlayer, KeyPlayer } from '@/lib/lineup'
 import { getConfidenceLabel, formatMatchDate, formatMatchTime } from '@/lib/mock-data'
-import { getProbableLineup, DEFAULT_SEASON } from '@/lib/lineup'
-import { getAbsentPlayersByTeam } from '@/lib/api'
+import { getProbableLineup, getKeyPlayers, getAbsentImpact, DEFAULT_SEASON } from '@/lib/lineup'
 import { cn } from '@/lib/utils'
 import {
   Dialog,
@@ -19,6 +18,8 @@ import {
   BarChart3,
   Users,
   UserX,
+  Star,
+  AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import Image from 'next/image'
@@ -50,23 +51,32 @@ function groupByPosition(players: LineupPlayer[]): Record<string, LineupPlayer[]
 
 export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps) {
   const [imageError, setImageError] = useState<Record<number, boolean>>({})
-  const [homePlayers, setHomePlayers]       = useState<LineupPlayer[]>([])
-  const [awayPlayers, setAwayPlayers]       = useState<LineupPlayer[]>([])
-  const [homeAbsents, setHomeAbsents]       = useState<Player[]>([])
-  const [awayAbsents, setAwayAbsents]       = useState<Player[]>([])
-  const [lineupLoading, setLineupLoading]   = useState(false)
+  const [homePlayers, setHomePlayers]         = useState<LineupPlayer[]>([])
+  const [awayPlayers, setAwayPlayers]         = useState<LineupPlayer[]>([])
+  const [homeKeyPlayers, setHomeKeyPlayers]   = useState<KeyPlayer[]>([])
+  const [awayKeyPlayers, setAwayKeyPlayers]   = useState<KeyPlayer[]>([])
+  const [homeAbsents, setHomeAbsents]         = useState<KeyPlayer[]>([])
+  const [awayAbsents, setAwayAbsents]         = useState<KeyPlayer[]>([])
+  const [lineupLoading, setLineupLoading]     = useState(false)
 
   useEffect(() => {
     if (!open || !match) return
     setLineupLoading(true)
     Promise.all([
+      // Compositions réelles depuis SofaScore (ou algo maison en fallback)
       getProbableLineup(match.id, match.homeTeam.id, DEFAULT_SEASON),
       getProbableLineup(match.id, match.awayTeam.id, DEFAULT_SEASON),
-      getAbsentPlayersByTeam(match.homeTeam.id),
-      getAbsentPlayersByTeam(match.awayTeam.id),
-    ]).then(([home, away, homeAbs, awayAbs]) => {
+      // Top 3 joueurs clés par équipe (calculé via l'algo de scoring)
+      getKeyPlayers(match.homeTeam.id, DEFAULT_SEASON),
+      getKeyPlayers(match.awayTeam.id, DEFAULT_SEASON),
+      // Absents pour CE match avec évaluation d'impact
+      getAbsentImpact(match.id, match.homeTeam.id, DEFAULT_SEASON),
+      getAbsentImpact(match.id, match.awayTeam.id, DEFAULT_SEASON),
+    ]).then(([home, away, homeKeys, awayKeys, homeAbs, awayAbs]) => {
       setHomePlayers(home)
       setAwayPlayers(away)
+      setHomeKeyPlayers(homeKeys)
+      setAwayKeyPlayers(awayKeys)
       setHomeAbsents(homeAbs)
       setAwayAbsents(awayAbs)
       setLineupLoading(false)
@@ -236,6 +246,20 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             </div>
           )}
 
+          {/* Joueurs clés */}
+          {(homeKeyPlayers.length > 0 || awayKeyPlayers.length > 0) && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Star className="h-4 w-4 text-yellow-500" />
+                <h4 className="font-semibold text-foreground">Joueurs clés</h4>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <KeyPlayersColumn teamName={match.homeTeam.shortName} players={homeKeyPlayers} />
+                <KeyPlayersColumn teamName={match.awayTeam.shortName} players={awayKeyPlayers} />
+              </div>
+            </div>
+          )}
+
           {/* Compositions probables */}
           <div>
             <div className="flex items-center gap-2 mb-3">
@@ -265,7 +289,7 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             )}
           </div>
 
-          {/* Joueurs absents */}
+          {/* Absents avec indicateur d'impact */}
           {(homeAbsents.length > 0 || awayAbsents.length > 0) && (
             <div>
               <div className="flex items-center gap-2 mb-3">
@@ -348,7 +372,61 @@ function LineupColumn({ teamName, players, hasStats }: LineupColumnProps) {
   )
 }
 
-function AbsentsColumn({ teamName, players }: { teamName: string; players: Player[] }) {
+const POSITION_SHORT: Record<string, string> = {
+  Goalkeeper: 'GK',
+  Defender:   'DEF',
+  Midfielder: 'MIL',
+  Forward:    'ATT',
+}
+const POSITION_COLOR: Record<string, string> = {
+  Goalkeeper: 'bg-yellow-500/20 text-yellow-400',
+  Defender:   'bg-blue-500/20 text-blue-400',
+  Midfielder: 'bg-green-500/20 text-green-400',
+  Forward:    'bg-red-500/20 text-red-400',
+}
+
+// Affiche les 3 joueurs les plus régulièrement titulaires (score = nb de titularisations)
+function KeyPlayersColumn({ teamName, players }: { teamName: string; players: KeyPlayer[] }) {
+  if (players.length === 0) return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{teamName}</p>
+      <p className="text-xs text-muted-foreground italic">Pas de données</p>
+    </div>
+  )
+
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{teamName}</p>
+      <ul className="space-y-1.5">
+        {players.map((p, i) => (
+          <li key={p.id} className="flex items-center gap-2">
+            <span className={cn(
+              "text-[10px] font-bold w-4 text-center shrink-0",
+              i === 0 && "text-yellow-500",
+              i === 1 && "text-slate-400",
+              i === 2 && "text-amber-700",
+            )}>
+              {i + 1}
+            </span>
+            {p.position && (
+              <span className={cn(
+                "px-1 py-0.5 text-[9px] font-bold rounded shrink-0",
+                POSITION_COLOR[p.position] ?? 'bg-muted text-muted-foreground',
+              )}>
+                {POSITION_SHORT[p.position] ?? p.position.slice(0, 3).toUpperCase()}
+              </span>
+            )}
+            <span className="text-sm text-foreground truncate flex-1">{p.name}</span>
+            <span className="text-[10px] text-muted-foreground/70 shrink-0">{p.score} matchs</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// Affiche les joueurs absents pour ce match, avec une icône warning si l'absence est impactante
+function AbsentsColumn({ teamName, players }: { teamName: string; players: KeyPlayer[] }) {
   if (players.length === 0) return (
     <div>
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{teamName}</p>
@@ -365,7 +443,14 @@ function AbsentsColumn({ teamName, players }: { teamName: string; players: Playe
             <span className="px-1.5 py-0.5 bg-destructive/15 text-destructive text-[9px] font-bold rounded uppercase shrink-0">
               {p.position ? p.position.slice(0, 3) : 'N/A'}
             </span>
-            <span className="text-sm text-muted-foreground line-through truncate">{p.name}</span>
+            <span className="text-sm text-muted-foreground line-through truncate flex-1">{p.name}</span>
+            {/* Icône d'avertissement si l'absence est considérée impactante */}
+            {p.isImpactAbsent && (
+              <AlertTriangle
+                className="h-3.5 w-3.5 text-yellow-500 shrink-0"
+                aria-label="Absence impactante"
+              />
+            )}
           </li>
         ))}
       </ul>

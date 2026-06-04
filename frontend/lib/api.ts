@@ -2,8 +2,12 @@ import { supabase } from './supabase'
 import { Match, Player } from './types'
 
 export async function getUpcomingMatches(): Promise<Match[]> {
-  // 1. Récupérer les matchs à venir
-  const { data: matchesData, error: matchesError } = await supabase
+  // Mode simulation : pas de matchs à venir en intersaison → on affiche les
+  // 60 derniers jours de matchs terminés pour pouvoir tester les compositions.
+  const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
+
+  // 1. Essayer les matchs à venir d'abord
+  let { data: matchesData, error: matchesError } = await supabase
     .from('match')
     .select(`
       id,
@@ -17,6 +21,56 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     .gte('match_date', new Date().toISOString())
     .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
+
+  // Aucun match à venir → mode simulation : matchs avec titulaires, Ligue 1 en premier
+  if (!matchesError && (!matchesData || matchesData.length === 0)) {
+    const simSelect = `
+      id,
+      match_date,
+      status,
+      league,
+      home_team:home_team_id(id, name, short_name, logo_url),
+      away_team:away_team_id(id, name, short_name, logo_url),
+      lineup!inner(id)
+    `
+    const dateFrom = '2026-01-01T00:00:00'
+    const dateTo   = '2026-05-29T23:59:59'
+
+    const fetchLeague = (league: string, limit: number) =>
+      supabase.from('match')
+        .select(simSelect)
+        .eq('status', 'finished')
+        .eq('league', league)
+        .eq('lineup.is_starter', true)
+        .gte('match_date', dateFrom)
+        .lte('match_date', dateTo)
+        .order('match_date', { ascending: false })
+        .limit(limit)
+
+    // Ligue 1 en premier dans les résultats, 20 matchs par ligue
+    const [l1, pl, laliga, bl, sa] = await Promise.all([
+      fetchLeague('Ligue 1',       20),
+      fetchLeague('Premier League', 20),
+      fetchLeague('La Liga',        20),
+      fetchLeague('Bundesliga',     20),
+      fetchLeague('Serie A',        20),
+    ])
+
+    // lineup!inner peut dupliquer par entrée → déduplication par id
+    const seen = new Set<number>()
+    matchesData = [
+      ...(l1.data   || []),
+      ...(pl.data   || []),
+      ...(laliga.data || []),
+      ...(bl.data   || []),
+      ...(sa.data   || []),
+    ].filter((m: any) => {
+      if (seen.has(m.id)) return false
+      seen.add(m.id)
+      return true
+    })
+    matchesError = l1.error || pl.error || laliga.error || bl.error || sa.error
+  }
 
   if (matchesError || !matchesData) {
     console.error("Erreur Supabase (matchs):", matchesError)
@@ -70,7 +124,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       id: m.id,
       league: m.league || 'Ligue 1',
       matchDate: m.match_date,
-      status: 'upcoming',
+      status: m.status as Match['status'],
       homeTeam: {
         id: m.home_team.id,
         name: m.home_team.name,
