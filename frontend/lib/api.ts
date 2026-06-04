@@ -22,7 +22,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
     .in('league', ['Ligue 1', 'Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
     .order('match_date')
 
-  // Aucun match à venir → mode simulation : matchs avec compos, Ligue 1 en premier
+  // Aucun match à venir → mode simulation : matchs avec titulaires, Ligue 1 en premier
   if (!matchesError && (!matchesData || matchesData.length === 0)) {
     const simSelect = `
       id,
@@ -33,33 +33,43 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       away_team:away_team_id(id, name, short_name, logo_url),
       lineup!inner(id)
     `
-    const [ligue1Res, othersRes] = await Promise.all([
+    const dateFrom = '2026-01-01T00:00:00'
+    const dateTo   = '2026-05-29T23:59:59'
+
+    const fetchLeague = (league: string, limit: number) =>
       supabase.from('match')
         .select(simSelect)
         .eq('status', 'finished')
-        .eq('league', 'Ligue 1')
-        .gte('match_date', '2026-01-01T00:00:00')
-        .lte('match_date', '2026-05-29T23:59:59')
+        .eq('league', league)
+        .eq('lineup.is_starter', true)
+        .gte('match_date', dateFrom)
+        .lte('match_date', dateTo)
         .order('match_date', { ascending: false })
-        .limit(50),
-      supabase.from('match')
-        .select(simSelect)
-        .eq('status', 'finished')
-        .in('league', ['Premier League', 'La Liga', 'Bundesliga', 'Serie A'])
-        .gte('match_date', '2026-01-01T00:00:00')
-        .lte('match_date', '2026-05-29T23:59:59')
-        .order('match_date', { ascending: false })
-        .limit(50),
+        .limit(limit)
+
+    // Ligue 1 en premier dans les résultats, 20 matchs par ligue
+    const [l1, pl, laliga, bl, sa] = await Promise.all([
+      fetchLeague('Ligue 1',       20),
+      fetchLeague('Premier League', 20),
+      fetchLeague('La Liga',        20),
+      fetchLeague('Bundesliga',     20),
+      fetchLeague('Serie A',        20),
     ])
 
-    // lineup!inner duplique les lignes (une par entrée lineup) → déduplication par id
+    // lineup!inner peut dupliquer par entrée → déduplication par id
     const seen = new Set<number>()
-    matchesData = [...(ligue1Res.data || []), ...(othersRes.data || [])].filter((m: any) => {
+    matchesData = [
+      ...(l1.data   || []),
+      ...(pl.data   || []),
+      ...(laliga.data || []),
+      ...(bl.data   || []),
+      ...(sa.data   || []),
+    ].filter((m: any) => {
       if (seen.has(m.id)) return false
       seen.add(m.id)
       return true
     })
-    matchesError = ligue1Res.error || othersRes.error
+    matchesError = l1.error || pl.error || laliga.error || bl.error || sa.error
   }
 
   if (matchesError || !matchesData) {
