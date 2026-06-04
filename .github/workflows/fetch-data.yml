@@ -23,7 +23,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install curl_cffi supabase python-dotenv
+        run: pip install -r requirements.txt
 
       - name: Fetch matches (sofascore_id + teams)
         env:

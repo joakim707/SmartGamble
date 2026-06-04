@@ -1,6 +1,9 @@
 # Dépendances Python du projet SmartGamble
 # Installer avec : pip install -r requirements.txt
 
+# Client HTTP standard — utilisé par fetch_odds.py, check_bookmakers.py
+requests>=2.31.0
+
 # Client HTTP avec fingerprint TLS Chrome — bypass Cloudflare sur SofaScore
 # Remplace requests standard : from curl_cffi import requests
 curl_cffi>=0.7.0
