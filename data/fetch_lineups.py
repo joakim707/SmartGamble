@@ -293,16 +293,23 @@ def run() -> None:
     matches = result.data or []
     print(f"\n{len(matches)} matchs terminés avec sofascore_id")
 
-    # Match IDs qui ont déjà des compositions → skip
-    # Paginer la table lineup (default limit Supabase = 1000 lignes, ~22 matchs seulement)
+    # Match IDs qui ont DÉJÀ de vraies compos SofaScore (joueur avec sofascore_id).
+    # Les matchs avec seulement des compos algo (sofascore_id null) sont re-traités.
     already_done: set[int] = set()
     offset = 0
     while True:
-        page = supabase.table("lineup").select("match_id").range(offset, offset + 999).execute()
+        page = (
+            supabase.table("lineup")
+            .select("match_id, player:player_id(sofascore_id)")
+            .range(offset, offset + 999)
+            .execute()
+        )
         if not page.data:
             break
         for row in page.data:
-            already_done.add(row["match_id"])
+            player_data = row.get("player") or {}
+            if player_data.get("sofascore_id") is not None:
+                already_done.add(row["match_id"])
         if len(page.data) < 1000:
             break
         offset += 1000
