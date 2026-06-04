@@ -81,13 +81,64 @@ STATUS_MAP = {
 # Helpers
 # ================================
 
+# Noms SofaScore -> noms football-data.org pour éviter les doublons d'équipes
+TEAM_NAME_ALIASES = {
+    "Real Madrid":              "Real Madrid CF",
+    "Atletico Madrid":          "Atletico de Madrid",
+    "Atletico de Madrid":       "Atletico de Madrid",
+    "Sevilla":                  "Sevilla FC",
+    "Rayo Vallecano":           "Rayo Vallecano de Madrid",
+    "Elche":                    "Elche CF",
+    "Valencia":                 "Valencia CF",
+    "Getafe":                   "Getafe CF",
+    "Real Sociedad":            "Real Sociedad de Fútbol",
+    "Espanyol":                 "RCD Espanyol de Barcelona",
+    "Villarreal":               "Villarreal CF",
+    "Osasuna":                  "CA Osasuna",
+    "Real Betis":               "Real Betis Balompié",
+    "Mallorca":                 "RCD Mallorca",
+    "1. FC Heidenheim":         "1. FC Heidenheim 1846",
+    "FC St. Pauli":             "FC St. Pauli 1910",
+    "Bournemouth":              "AFC Bournemouth",
+    "West Ham United":          "West Ham United FC",
+    "Arsenal":                  "Arsenal FC",
+    "Aston Villa":              "Aston Villa FC",
+    "Brentford":                "Brentford FC",
+    "Burnley":                  "Burnley FC",
+    "Sunderland":               "Sunderland AFC",
+    "Chelsea":                  "Chelsea FC",
+    "Crystal Palace":           "Crystal Palace FC",
+    "Everton":                  "Everton FC",
+    "Wolverhampton":            "Wolverhampton Wanderers FC",
+    "Manchester United":        "Manchester United FC",
+    "Brighton & Hove Albion":   "Brighton & Hove Albion FC",
+    "Manchester City":          "Manchester City FC",
+    "Leeds United":             "Leeds United FC",
+    "Newcastle United":         "Newcastle United FC",
+    "Tottenham Hotspur":        "Tottenham Hotspur FC",
+    "Nottingham Forest":        "Nottingham Forest FC",
+    "Fulham":                   "Fulham FC",
+    "RC Strasbourg":            "RC Strasbourg Alsace",
+    "AS Monaco":                "Monaco",
+    "Stade Brestois":           "Stade Brestois 29",
+    "Stade Rennais":            "Stade Rennais FC 1901",
+    "RC Lens":                  "Lens",
+    "Lorient":                  "FC Lorient",
+    "Paris Saint-Germain":      "Paris Saint-Germain FC",
+    "Sassuolo":                 "US Sassuolo Calcio",
+    "Lecce":                    "US Lecce",
+    "Genoa":                    "Genoa CFC",
+}
+
+
 def upsert_team(team_data: dict, league_name: str) -> int:
     """
     Insère ou met à jour une équipe en BDD.
     Le logo est construit à partir de l'ID SofaScore de l'équipe.
     Retourne l'id Supabase de l'équipe.
     """
-    name     = team_data["name"]
+    raw_name = team_data["name"]
+    name     = TEAM_NAME_ALIASES.get(raw_name, raw_name)
     sofa_tid = team_data["id"]
 
     payload = {
