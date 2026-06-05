@@ -1,0 +1,24 @@
+# Dépendances Python du projet SmartGamble
+# Installer avec : pip install -r requirements.txt
+
+# Client HTTP standard
+requests>=2.31.0
+
+# Client HTTP avec fingerprint TLS Chrome
+curl_cffi>=0.7.0
+
+# Client HTTP asynchrone
+aiohttp>=3.9.0
+
+# Client Supabase officiel pour Python
+supabase>=2.0.0
+
+# Chargement des variables d'environnement
+python-dotenv>=1.0.0
+
+# Librairie Understat pour récupérer les stats joueurs
+understat>=1.0.0
+
+# Outils d'Analyse de Données et Machine Learning (IA)
+pandas>=2.0.0
+scikit-learn>=1.3.0
