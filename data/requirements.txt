@@ -19,3 +19,6 @@ python-dotenv>=1.0.0
 
 # Librairie Understat pour récupérer les stats joueurs (xG, buts, passes)
 understat>=1.0.0
+
+# Automatisation navigateur — warmup Cloudflare (cf_clearance) pour les IPs CI/AWS
+playwright>=1.40.0
