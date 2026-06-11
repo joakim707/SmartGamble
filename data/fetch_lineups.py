@@ -47,7 +47,7 @@ SOFA_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept":             "*/*",
     "Accept-Language":    "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -58,26 +58,139 @@ SOFA_HEADERS = {
     "Connection":         "keep-alive",
     "Cache-Control":      "no-cache",
     "Pragma":             "no-cache",
-    "sec-ch-ua":          '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua":          '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
     "sec-ch-ua-mobile":   "?0",
     "sec-ch-ua-platform": '"Windows"',
     "sec-fetch-dest":     "empty",
     "sec-fetch-mode":     "cors",
-    "sec-fetch-site":     "same-origin",
+    # api.sofascore.com est un sous-domaine différent de www.sofascore.com → same-site
+    "sec-fetch-site":     "same-site",
 }
 
 # Session curl_cffi : imite Chrome 124 au niveau TLS pour contourner Cloudflare
-_session = requests.Session(impersonate="chrome124")
+_session = requests.Session(impersonate="chrome131")
 _session.headers.update(SOFA_HEADERS)
 
 
-def _warmup_session() -> None:
-    """Visite sofascore.com pour renouveler le cookie __cf_bm (TTL ~30 min)."""
+# Playwright ne tourne qu'une seule fois au démarrage (cf_clearance TTL ~1h)
+_playwright_initialized = False
+
+
+def _warmup_with_playwright() -> bool:
+    """
+    Lance Chromium (headless) via Playwright pour obtenir de vrais cookies Cloudflare.
+
+    Contrairement à curl_cffi, un vrai navigateur exécute le challenge JS de Cloudflare
+    et reçoit un cookie cf_clearance (TTL ~1 h) + __cf_bm (TTL ~30 min).
+    Ces cookies sont injectés dans la session curl_cffi via l'en-tête Cookie.
+
+    Nécessaire sur les IPs GitHub Actions (AWS) que Cloudflare connaît et défie.
+    Retourne True si succès, False si Playwright n'est pas installé ou échoue.
+    """
     try:
-        _session.get("https://www.sofascore.com/", timeout=10)
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+
+    print("  [playwright] Warmup Cloudflare (chromium headless)...")
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            ctx = browser.new_context(
+                user_agent=SOFA_HEADERS["User-Agent"],
+                locale="fr-FR",
+            )
+            page = ctx.new_page()
+
+            # Page d'accueil — résout le challenge CF global
+            page.goto("https://www.sofascore.com/", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(3)
+
+            # Une page par championnat — obtient les cookies CF spécifiques à chaque ligue
+            for league, slug in LEAGUE_SLUGS.items():
+                try:
+                    page.goto(
+                        f"https://www.sofascore.com/tournament/{slug}",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    time.sleep(1)
+                    print(f"  [playwright] {league} ✓")
+                except Exception:
+                    pass
+
+            # Injecter les cookies dans la session curl_cffi
+            cookies = ctx.cookies()
+            browser.close()
+
+        cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+        _session.headers.update({"Cookie": cookie_header})
+        cf = [c["name"] for c in cookies if "cf" in c["name"].lower()]
+        print(f"  [playwright] {len(cookies)} cookies injectés — CF: {cf}")
+        return True
+
+    except Exception as e:
+        print(f"  [playwright warmup échoué] {e}")
+        return False
+
+
+def _warmup_session() -> bool:
+    """
+    Renouvelle les cookies Cloudflare.
+
+    — Premier appel : Playwright (vrai navigateur) pour obtenir cf_clearance (~1h)
+    — Appels suivants (toutes les 50 itérations) : curl_cffi pour rafraîchir __cf_bm (~30 min)
+      Pas de relancement de Chromium — trop lent sur 200+ matchs.
+    """
+    global _playwright_initialized
+    if not _playwright_initialized:
+        _playwright_initialized = _warmup_with_playwright()
+        if _playwright_initialized:
+            return True
+    # Re-warmup léger : rafraîchit __cf_bm sans relancer Chromium
+    try:
+        resp = _session.get("https://www.sofascore.com/", timeout=10)
         time.sleep(2)
-    except requests.RequestException:
-        pass
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"  [warmup curl_cffi échoué] {e}")
+        return False
+
+
+def _get_with_retry(url: str, context: str) -> requests.Response | None:
+    """
+    GET avec jusqu'à 3 tentatives en cas de 403.
+    Entre chaque tentative : warmup + délai croissant (2s, 4s).
+    Retourne la Response si status 200, None sinon.
+    """
+    for attempt in range(3):
+        try:
+            resp = _session.get(url, timeout=15)
+        except requests.RequestException as e:
+            print(f"    Erreur réseau {context} (tentative {attempt + 1}) : {e}")
+            return None
+
+        if resp.status_code == 200:
+            return resp
+        if resp.status_code == 404:
+            return resp  # appelant gère le 404
+        if resp.status_code == 403 and attempt < 2:
+            delay = (attempt + 1) * 2
+            print(f"    403 {context} → warmup (tentative {attempt + 1}/3, attente {delay}s)")
+            ok = _warmup_session()
+            if not ok:
+                print(f"    Warmup échoué, nouvelle tentative quand même")
+            time.sleep(delay)
+            continue
+
+        print(f"    HTTP {resp.status_code} {context} (tentative {attempt + 1}/3)")
+        return None
+
+    print(f"    3 tentatives épuisées pour {context}, event ignoré")
+    return None
 
 
 def _warmup_league(league: str) -> None:
@@ -216,30 +329,11 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
     """
     url = f"https://api.sofascore.com/api/v1/event/{sofa_event_id}/lineups"
 
-    try:
-        resp = _session.get(url, timeout=15)
-    except requests.RequestException as e:
-        print(f"    Erreur réseau (event {sofa_event_id}) : {e}")
+    resp = _get_with_retry(url, f"event {sofa_event_id}")
+    if resp is None:
         return
-
     if resp.status_code == 404:
-        # Composition pas encore publiée par SofaScore
         print(f"    Pas de compo disponible pour l'événement {sofa_event_id}")
-        return
-    if resp.status_code == 403:
-        # Cookie Cloudflare expiré → re-warmup et un seul retry
-        print(f"    403 → re-warmup session (event {sofa_event_id})")
-        _warmup_session()
-        try:
-            resp = _session.get(url, timeout=15)
-        except requests.RequestException as e:
-            print(f"    Erreur réseau après warmup : {e}")
-            return
-        if resp.status_code != 200:
-            print(f"    HTTP {resp.status_code} après warmup, event ignoré")
-            return
-    elif resp.status_code != 200:
-        print(f"    HTTP {resp.status_code} pour l'événement {sofa_event_id}")
         return
 
     data = resp.json()

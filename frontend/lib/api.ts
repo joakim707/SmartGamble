@@ -33,8 +33,9 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       away_team:away_team_id(id, name, short_name, logo_url),
       lineup!inner(id)
     `
-    const dateFrom = '2026-01-01T00:00:00'
-    const dateTo   = '2026-05-29T23:59:59'
+    const now      = new Date()
+    const dateFrom = new Date(now.getFullYear(), now.getMonth() - 3, 1).toISOString()
+    const dateTo   = now.toISOString()
 
     const fetchLeague = (league: string, limit: number) =>
       supabase.from('match')
