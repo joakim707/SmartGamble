@@ -1,10 +1,10 @@
 'use client'
 
 import Image from 'next/image'
-import { Match, RiskLevel } from '@/lib/types'
+import { Match } from '@/lib/types'
 import { formatMatchTime, formatMatchDate, getConfidenceLabel } from '@/lib/mock-data'
 import { cn } from '@/lib/utils'
-import { Clock, TrendingUp, ChevronRight } from 'lucide-react'
+import { Clock, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 
 interface MatchCardProps {
@@ -15,51 +15,68 @@ interface MatchCardProps {
 export function MatchCard({ match, onClick }: MatchCardProps) {
   const [imageError, setImageError] = useState<Record<string, boolean>>({})
   const confidence = match.confidenceScore ? getConfidenceLabel(match.confidenceScore) : null
-  
+  const isFinished = match.status === 'finished'
+
   const handleImageError = (teamId: number) => {
     setImageError(prev => ({ ...prev, [teamId]: true }))
   }
 
   return (
-    <div 
+    <div
       className="group bg-card hover:bg-secondary/50 border-b border-border transition-all cursor-pointer"
       onClick={onClick}
     >
       <div className="flex items-center px-4 py-3 gap-4">
-        {/* Time */}
-        <div className="flex flex-col items-center min-w-[60px]">
-          <div className="flex items-center gap-1 text-muted-foreground">
-            <Clock className="h-3 w-3" />
-            <span className="text-xs font-medium">{formatMatchTime(match.matchDate)}</span>
-          </div>
-          <span className="text-[10px] text-muted-foreground/70 mt-0.5">{formatMatchDate(match.matchDate)}</span>
-          {match.status === 'live' && (
-            <span className="mt-1 px-2 py-0.5 bg-[var(--live)] text-white text-[10px] font-bold rounded animate-pulse">
-              LIVE
-            </span>
+
+        {/* Colonne gauche : heure ou badge FIN */}
+        <div className="flex flex-col items-center min-w-[52px]">
+          {isFinished ? (
+            <>
+              <span className="text-[10px] font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+                FIN
+              </span>
+              <span className="text-[10px] text-muted-foreground/70 mt-0.5">
+                {formatMatchDate(match.matchDate)}
+              </span>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                <span className="text-xs font-medium">{formatMatchTime(match.matchDate)}</span>
+              </div>
+              <span className="text-[10px] text-muted-foreground/70 mt-0.5">
+                {formatMatchDate(match.matchDate)}
+              </span>
+              {match.status === 'live' && (
+                <span className="mt-1 px-2 py-0.5 bg-[var(--live)] text-white text-[10px] font-bold rounded animate-pulse">
+                  LIVE
+                </span>
+              )}
+            </>
           )}
         </div>
 
-        {/* Teams */}
+        {/* Équipes + score */}
         <div className="flex-1 min-w-0">
-          <TeamRow 
-            team={match.homeTeam} 
-            form={match.homeForm} 
-            isHome={true}
+          <TeamRow
+            team={match.homeTeam}
+            form={match.homeForm}
+            score={isFinished ? match.scoreHome : undefined}
             imageError={imageError[match.homeTeam.id]}
             onImageError={() => handleImageError(match.homeTeam.id)}
           />
-          <TeamRow 
-            team={match.awayTeam} 
-            form={match.awayForm} 
-            isHome={false}
+          <TeamRow
+            team={match.awayTeam}
+            form={match.awayForm}
+            score={isFinished ? match.scoreAway : undefined}
             imageError={imageError[match.awayTeam.id]}
             onImageError={() => handleImageError(match.awayTeam.id)}
           />
         </div>
 
-        {/* Odds */}
-        {match.odds && (
+        {/* Cotes (matchs à venir et live) */}
+        {match.odds && !isFinished && (
           <div className="flex items-center gap-2">
             <OddsBox label="1" value={match.odds.home} />
             <OddsBox label="X" value={match.odds.draw} />
@@ -67,20 +84,25 @@ export function MatchCard({ match, onClick }: MatchCardProps) {
           </div>
         )}
 
-        {/* Confidence Score */}
-        {confidence && (
-          <div className="hidden sm:flex flex-col items-center min-w-[80px]">
-            <div className="flex items-center gap-1">
-              <TrendingUp className={cn("h-3 w-3", confidence.color)} />
-              <span className={cn("text-lg font-bold", confidence.color)}>
-                {match.confidenceScore}%
-              </span>
-            </div>
+        {/* Score centré pour matchs terminés */}
+        {isFinished && (match.scoreHome !== undefined || match.scoreAway !== undefined) && (
+          <div className="hidden sm:flex items-center justify-center gap-1 min-w-[64px]">
+            <span className="text-xl font-bold text-foreground">{match.scoreHome ?? '?'}</span>
+            <span className="text-muted-foreground text-sm">–</span>
+            <span className="text-xl font-bold text-foreground">{match.scoreAway ?? '?'}</span>
+          </div>
+        )}
+
+        {/* Indice de confiance (matchs à venir) */}
+        {confidence && !isFinished && (
+          <div className="hidden sm:flex flex-col items-center min-w-[72px]">
+            <span className={cn('text-lg font-bold', confidence.color)}>
+              {match.confidenceScore}%
+            </span>
             <span className="text-[10px] text-muted-foreground">{confidence.label}</span>
           </div>
         )}
 
-        {/* Arrow */}
         <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
     </div>
@@ -90,15 +112,15 @@ export function MatchCard({ match, onClick }: MatchCardProps) {
 interface TeamRowProps {
   team: Match['homeTeam']
   form?: string
-  isHome: boolean
+  score?: number
   imageError?: boolean
   onImageError: () => void
 }
 
-function TeamRow({ team, form, isHome, imageError, onImageError }: TeamRowProps) {
+function TeamRow({ team, form, score, imageError, onImageError }: TeamRowProps) {
   return (
-    <div className={cn("flex items-center gap-3", !isHome && "mt-2")}>
-      <div className="relative h-6 w-6 flex-shrink-0">
+    <div className="flex items-center gap-3 py-0.5">
+      <div className="relative h-5 w-5 flex-shrink-0">
         {!imageError ? (
           <Image
             src={team.logoUrl}
@@ -108,15 +130,18 @@ function TeamRow({ team, form, isHome, imageError, onImageError }: TeamRowProps)
             onError={onImageError}
           />
         ) : (
-          <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center">
-            <span className="text-xs font-bold text-muted-foreground">
+          <div className="h-5 w-5 rounded-full bg-muted flex items-center justify-center">
+            <span className="text-[10px] font-bold text-muted-foreground">
               {team.shortName.charAt(0)}
             </span>
           </div>
         )}
       </div>
-      <span className="font-medium text-foreground truncate flex-1">{team.name}</span>
+      <span className="font-medium text-foreground truncate flex-1 text-sm">{team.name}</span>
       {form && <FormBadges form={form} />}
+      {score !== undefined && (
+        <span className="text-sm font-bold text-foreground ml-2 sm:hidden">{score}</span>
+      )}
     </div>
   )
 }
@@ -128,10 +153,10 @@ function FormBadges({ form }: { form: string }) {
         <span
           key={i}
           className={cn(
-            "w-5 h-5 flex items-center justify-center text-[10px] font-bold rounded text-white",
-            result === 'W' && "bg-[var(--win)]",
-            result === 'D' && "bg-[var(--draw)]",
-            result === 'L' && "bg-[var(--loss)]"
+            'w-4 h-4 flex items-center justify-center text-[9px] font-bold rounded text-white',
+            result === 'W' && 'bg-[var(--win)]',
+            result === 'D' && 'bg-[var(--draw)]',
+            result === 'L' && 'bg-[var(--loss)]'
           )}
         >
           {result}
@@ -153,9 +178,9 @@ export function OddsBox({ label, value, isHighlighted, onClick }: OddsBoxProps) 
     <button
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center justify-center min-w-[50px] py-2 px-3 rounded-lg transition-all",
-        "bg-[var(--odds-bg)] hover:bg-[var(--odds-hover)]",
-        isHighlighted && "ring-2 ring-primary bg-primary/10"
+        'flex flex-col items-center justify-center min-w-[46px] py-1.5 px-2.5 rounded-lg transition-all',
+        'bg-[var(--odds-bg)] hover:bg-[var(--odds-hover)]',
+        isHighlighted && 'ring-2 ring-primary bg-primary/10'
       )}
     >
       <span className="text-[10px] text-muted-foreground">{label}</span>
