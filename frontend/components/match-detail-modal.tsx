@@ -123,7 +123,7 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             {/* Home Team */}
             <div className="flex-1 flex flex-col items-center text-center">
               <div className="relative h-16 w-16 mb-3">
-                {!imageError[match.homeTeam.id] ? (
+                {!imageError[match.homeTeam.id] && match.homeTeam.logoUrl ? (
                   <Image
                     src={match.homeTeam.logoUrl}
                     alt={match.homeTeam.name}
@@ -152,7 +152,7 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             {/* Away Team */}
             <div className="flex-1 flex flex-col items-center text-center">
               <div className="relative h-16 w-16 mb-3">
-                {!imageError[match.awayTeam.id] ? (
+                {!imageError[match.awayTeam.id] && match.awayTeam.logoUrl ? (
                   <Image
                     src={match.awayTeam.logoUrl}
                     alt={match.awayTeam.name}

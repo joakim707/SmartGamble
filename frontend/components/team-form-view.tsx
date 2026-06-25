@@ -39,7 +39,7 @@ function TeamRow({ team }: { team: TeamForm }) {
     <div className="flex items-center gap-3 py-2.5 border-b border-border/40 last:border-0">
       {/* Logo */}
       <div className="relative h-7 w-7 shrink-0">
-        {!imgError ? (
+        {!imgError && team.logoUrl ? (
           <Image src={team.logoUrl} alt={team.name} fill className="object-contain"
             onError={() => setImgError(true)} />
         ) : (

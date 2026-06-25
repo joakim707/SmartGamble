@@ -1,10 +1,8 @@
 'use client'
 
 import Image from 'next/image'
-import { Match, RiskLevel } from '@/lib/types'
-import { formatMatchTime, formatMatchDate, getConfidenceLabel } from '@/lib/mock-data'
+import { Match } from '@/lib/types'
 import { cn } from '@/lib/utils'
-import { Clock, TrendingUp, ChevronRight } from 'lucide-react'
 import { useState } from 'react'
 
 interface MatchCardProps {
@@ -13,149 +11,80 @@ interface MatchCardProps {
 }
 
 export function MatchCard({ match, onClick }: MatchCardProps) {
-  const [imageError, setImageError] = useState<Record<string, boolean>>({})
-  const confidence = match.confidenceScore ? getConfidenceLabel(match.confidenceScore) : null
-  
-  const handleImageError = (teamId: number) => {
-    setImageError(prev => ({ ...prev, [teamId]: true }))
-  }
+  const [imgErr, setImgErr] = useState<Record<number, boolean>>({})
+
+  const dateStr = new Date(match.matchDate).toLocaleDateString('fr-FR', {
+    weekday: 'short', day: 'numeric', month: 'short',
+  })
+  const timeStr = new Date(match.matchDate).toLocaleTimeString('fr-FR', {
+    hour: '2-digit', minute: '2-digit',
+  })
 
   return (
-    <div 
-      className="group bg-card hover:bg-secondary/50 border-b border-border transition-all cursor-pointer"
+    <div
       onClick={onClick}
+      className="bg-card border border-border rounded-xl p-4 cursor-pointer hover:border-primary/40 hover:bg-secondary/30 transition-all flex flex-col gap-4"
     >
-      <div className="flex items-center px-4 py-3 gap-4">
-        {/* Time */}
-        <div className="flex flex-col items-center min-w-[60px]">
-          <div className="flex items-center gap-1 text-muted-foreground">
-            <Clock className="h-3 w-3" />
-            <span className="text-xs font-medium">{formatMatchTime(match.matchDate)}</span>
-          </div>
-          <span className="text-[10px] text-muted-foreground/70 mt-0.5">{formatMatchDate(match.matchDate)}</span>
-          {match.status === 'live' && (
-            <span className="mt-1 px-2 py-0.5 bg-[var(--live)] text-white text-[10px] font-bold rounded animate-pulse">
-              LIVE
-            </span>
-          )}
-        </div>
-
-        {/* Teams */}
-        <div className="flex-1 min-w-0">
-          <TeamRow 
-            team={match.homeTeam} 
-            form={match.homeForm} 
-            isHome={true}
-            imageError={imageError[match.homeTeam.id]}
-            onImageError={() => handleImageError(match.homeTeam.id)}
-          />
-          <TeamRow 
-            team={match.awayTeam} 
-            form={match.awayForm} 
-            isHome={false}
-            imageError={imageError[match.awayTeam.id]}
-            onImageError={() => handleImageError(match.awayTeam.id)}
-          />
-        </div>
-
-        {/* Odds */}
-        {match.odds && (
-          <div className="flex items-center gap-2">
-            <OddsBox label="1" value={match.odds.home} />
-            <OddsBox label="X" value={match.odds.draw} />
-            <OddsBox label="2" value={match.odds.away} />
-          </div>
-        )}
-
-        {/* Confidence Score */}
-        {confidence && (
-          <div className="hidden sm:flex flex-col items-center min-w-[80px]">
-            <div className="flex items-center gap-1">
-              <TrendingUp className={cn("h-3 w-3", confidence.color)} />
-              <span className={cn("text-lg font-bold", confidence.color)}>
-                {match.confidenceScore}%
-              </span>
-            </div>
-            <span className="text-[10px] text-muted-foreground">{confidence.label}</span>
-          </div>
-        )}
-
-        {/* Arrow */}
-        <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-      </div>
-    </div>
-  )
-}
-
-interface TeamRowProps {
-  team: Match['homeTeam']
-  form?: string
-  isHome: boolean
-  imageError?: boolean
-  onImageError: () => void
-}
-
-function TeamRow({ team, form, isHome, imageError, onImageError }: TeamRowProps) {
-  return (
-    <div className={cn("flex items-center gap-3", !isHome && "mt-2")}>
-      <div className="relative h-6 w-6 flex-shrink-0">
-        {!imageError ? (
-          <Image
-            src={team.logoUrl}
-            alt={team.name}
-            fill
-            className="object-contain"
-            onError={onImageError}
-          />
+      {/* Date + statut */}
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>{dateStr}</span>
+        {match.status === 'live' ? (
+          <span className="px-2 py-0.5 bg-red-500/20 text-red-400 font-bold rounded animate-pulse">LIVE</span>
+        ) : match.status === 'finished' ? (
+          <span className="text-muted-foreground/60">Terminé</span>
         ) : (
-          <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center">
-            <span className="text-xs font-bold text-muted-foreground">
-              {team.shortName.charAt(0)}
-            </span>
+          <span>{timeStr}</span>
+        )}
+      </div>
+
+      {/* Équipes */}
+      <div className="flex flex-col gap-3">
+        <TeamRow team={match.homeTeam} imgErr={imgErr} setImgErr={setImgErr} />
+        <TeamRow team={match.awayTeam} imgErr={imgErr} setImgErr={setImgErr} />
+      </div>
+    </div>
+  )
+}
+
+function TeamRow({
+  team, imgErr, setImgErr,
+}: {
+  team: Match['homeTeam']
+  imgErr: Record<number, boolean>
+  setImgErr: React.Dispatch<React.SetStateAction<Record<number, boolean>>>
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      {/* Logo */}
+      <div className="relative h-8 w-8 shrink-0">
+        {!imgErr[team.id] && team.logoUrl ? (
+          <Image src={team.logoUrl} alt={team.name} fill className="object-contain"
+            onError={() => setImgErr(p => ({ ...p, [team.id]: true }))} />
+        ) : (
+          <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center">
+            <span className="text-xs font-bold text-muted-foreground">{team.name.charAt(0)}</span>
           </div>
         )}
       </div>
-      <span className="font-medium text-foreground truncate flex-1">{team.name}</span>
-      {form && <FormBadges form={form} />}
+
+      {/* Nom */}
+      <span className="flex-1 text-sm font-medium truncate">{team.name}</span>
+
     </div>
   )
 }
 
-function FormBadges({ form }: { form: string }) {
-  return (
-    <div className="hidden md:flex items-center gap-0.5">
-      {form.split('').map((result, i) => (
-        <span
-          key={i}
-          className={cn(
-            "w-5 h-5 flex items-center justify-center text-[10px] font-bold rounded text-white",
-            result === 'W' && "bg-[var(--win)]",
-            result === 'D' && "bg-[var(--draw)]",
-            result === 'L' && "bg-[var(--loss)]"
-          )}
-        >
-          {result}
-        </span>
-      ))}
-    </div>
-  )
-}
-
-interface OddsBoxProps {
-  label: string
-  value: number
-  isHighlighted?: boolean
-  onClick?: () => void
-}
-
-export function OddsBox({ label, value, isHighlighted, onClick }: OddsBoxProps) {
+// Garde la compatibilité avec match-detail-modal
+export function OddsBox({ label, value, isHighlighted, onClick }: {
+  label: string; value: number; isHighlighted?: boolean; onClick?: () => void
+}) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center justify-center min-w-[50px] py-2 px-3 rounded-lg transition-all",
-        "bg-[var(--odds-bg)] hover:bg-[var(--odds-hover)]",
-        isHighlighted && "ring-2 ring-primary bg-primary/10"
+        'flex flex-col items-center justify-center min-w-[50px] py-2 px-3 rounded-lg transition-all',
+        'bg-[var(--odds-bg)] hover:bg-[var(--odds-hover)]',
+        isHighlighted && 'ring-2 ring-primary bg-primary/10'
       )}
     >
       <span className="text-[10px] text-muted-foreground">{label}</span>
