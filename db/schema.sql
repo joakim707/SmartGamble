@@ -5,12 +5,13 @@
 
 -- Équipes
 CREATE TABLE team (
-    id          SERIAL PRIMARY KEY,
-    name        VARCHAR(100) NOT NULL,
-    short_name  VARCHAR(20),
-    league      VARCHAR(50) NOT NULL,  -- ex: "Ligue 1", "Premier League"
-    logo_url    VARCHAR(255),
-    created_at  TIMESTAMP DEFAULT NOW()
+    id                SERIAL PRIMARY KEY,
+    name              VARCHAR(100) NOT NULL,
+    short_name        VARCHAR(20),
+    league            VARCHAR(50) NOT NULL,  -- ex: "Ligue 1", "Premier League"
+    logo_url          VARCHAR(255),
+    thesportsdb_id    INTEGER UNIQUE,        -- ID TheSportsDB pour l'API joueurs
+    created_at        TIMESTAMP DEFAULT NOW()
 );
 
 -- Matchs
@@ -54,6 +55,19 @@ CREATE TABLE team_stats (
     UNIQUE (team_id, season)
 );
 
+-- Joueurs (composition probable)
+CREATE TABLE player (
+    id                SERIAL PRIMARY KEY,
+    thesportsdb_id    INTEGER UNIQUE NOT NULL,
+    team_id           INTEGER NOT NULL REFERENCES team(id),
+    name              VARCHAR(100) NOT NULL,
+    position          VARCHAR(50),   -- Goalkeeper | Defender | Midfielder | Forward
+    nationality       VARCHAR(100),
+    shirt_number      INTEGER,
+    photo_url         VARCHAR(255),
+    updated_at        TIMESTAMP DEFAULT NOW()
+);
+
 -- ========================
 -- Index utiles
 -- ========================
@@ -61,3 +75,5 @@ CREATE INDEX idx_match_date ON match(match_date);
 CREATE INDEX idx_match_league ON match(league);
 CREATE INDEX idx_match_status ON match(status);
 CREATE INDEX idx_team_stats_season ON team_stats(team_id, season);
+CREATE INDEX idx_player_team ON player(team_id);
+CREATE INDEX idx_player_position ON player(position);

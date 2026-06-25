@@ -33,13 +33,8 @@ build/
 data/raw/
 data/exports/
 *.csv
-*.json
+data/**/*.json
 *.parquet
-
-# ========================
-# Streamlit
-# ========================
-.streamlit/secrets.toml
 
 # ========================
 # Jupyter
@@ -69,3 +64,8 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# ========================
+# Claude Code (worktrees internes)
+# ========================
+.claude/
