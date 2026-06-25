@@ -150,11 +150,20 @@ async def process_match(session: aiohttp.ClientSession, match_row: dict) -> bool
 
     url = f"https://api.football-data.org/v4/matches/{fd_match_id}"
 
-    async with session.get(url, headers=_headers()) as resp:
-        if resp.status != 200:
-            print(f"    Erreur {resp.status} pour fd_match:{fd_match_id}")
-            return False
-        data = await resp.json()
+    for tentative in range(1, 4):
+        try:
+            async with session.get(url, headers=_headers()) as resp:
+                if resp.status != 200:
+                    print(f"    Erreur {resp.status} pour fd_match:{fd_match_id}")
+                    return False
+                data = await resp.json()
+            break
+        except aiohttp.ClientError as e:
+            if tentative == 3:
+                print(f"    Échec après 3 tentatives : {e}")
+                return False
+            print(f"    Tentative {tentative}/3 échouée ({e}), retry dans 7s...")
+            await asyncio.sleep(7)
 
     # Traitement des deux équipes
     for cote, team_id in [("homeTeam", home_team_id), ("awayTeam", away_team_id)]:

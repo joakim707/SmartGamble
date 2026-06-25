@@ -32,7 +32,7 @@ FOOTBALL_DATA_TOKEN  = os.getenv("FOOTBALL_DATA_API_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # football-data.org identifie les saisons par l'année de début : 2024 = 2024-25
-SAISON = "2024"
+SAISON = "2025"
 
 # Codes de compétition football-data.org → noms affichés en BDD
 LIGUES = {
@@ -65,20 +65,24 @@ def _headers() -> dict:
 # Helpers Supabase
 # ================================
 
-def upsert_equipe(nom: str, nom_court: str, ligue: str) -> int:
+def upsert_equipe(nom: str, nom_court: str, ligue: str, logo_url: str = "") -> int:
     """
-    Insère l'équipe si elle n'existe pas encore, ou récupère son id.
+    Insère l'équipe si elle n'existe pas encore, ou met à jour son logo.
     Recherche par nom exact pour éviter les doublons.
     Retourne l'id Supabase de l'équipe.
     """
     existant = supabase.table("team").select("id").eq("name", nom).execute()
     if existant.data:
-        return existant.data[0]["id"]
+        team_id = existant.data[0]["id"]
+        if logo_url:
+            supabase.table("team").update({"logo_url": logo_url}).eq("id", team_id).execute()
+        return team_id
 
     result = supabase.table("team").insert({
         "name":       nom,
         "short_name": nom_court,
         "league":     ligue,
+        "logo_url":   logo_url,
     }).execute()
     return result.data[0]["id"]
 
@@ -160,8 +164,8 @@ async def fetch_ligue(
         if not home.get("name") or not away.get("name"):
             continue
 
-        home_id = upsert_equipe(home["name"], home.get("shortName", ""), ligue_nom)
-        away_id = upsert_equipe(away["name"], away.get("shortName", ""), ligue_nom)
+        home_id = upsert_equipe(home["name"], home.get("shortName", ""), ligue_nom, home.get("crest", ""))
+        away_id = upsert_equipe(away["name"], away.get("shortName", ""), ligue_nom, away.get("crest", ""))
         upsert_match(match, home_id, away_id, ligue_nom)
 
         if match.get("status") == "FINISHED":

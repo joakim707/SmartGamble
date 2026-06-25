@@ -17,6 +17,7 @@ Flow : pour chaque ligue
 """
 
 import asyncio
+import json
 import os
 from difflib import SequenceMatcher
 
@@ -107,7 +108,8 @@ def trouver_joueur_id(nom_understat: str, index: dict[str, int]) -> int | None:
     return meilleur_id if meilleur_ratio > 0.75 else None
 
 
-def upsert_stats(player_id: int, minutes: int, buts: int, passes: int) -> None:
+def upsert_stats(player_id: int, minutes: int, buts: int, passes: int,
+                 key_passes: float, xa: float, npxg: float, shots: float) -> None:
     """
     Insère ou met à jour les stats d'un joueur pour la saison courante.
     La clé de conflit (player_id, season) empêche les doublons.
@@ -119,6 +121,10 @@ def upsert_stats(player_id: int, minutes: int, buts: int, passes: int) -> None:
             "minutes_played": minutes,
             "goals":          buts,
             "assists":        passes,
+            "key_passes":     key_passes,
+            "xa":             xa,
+            "npxg":           npxg,
+            "shots":          shots,
         },
         on_conflict="player_id,season",
     ).execute()
@@ -140,16 +146,27 @@ async def fetch_ligue(session: aiohttp.ClientSession, ligue: dict) -> None:
     ligue_nom = ligue["db_name"]
     print(f"\n=== {ligue_nom} ===")
 
-    # Requête POST vers l'endpoint Understat non documenté
-    async with session.post(
-        UNDERSTAT_PLAYERS_URL,
-        data={"league": ligue_key, "season": SAISON},
-        headers=UNDERSTAT_HEADERS,
-    ) as resp:
-        if resp.status != 200:
-            print(f"  Erreur HTTP {resp.status}")
-            return
-        data = await resp.json()
+    # Retry jusqu'à 3 fois en cas de déconnexion serveur
+    for tentative in range(1, 4):
+        try:
+            async with session.post(
+                UNDERSTAT_PLAYERS_URL,
+                data={"league": ligue_key, "season": SAISON},
+                headers=UNDERSTAT_HEADERS,
+            ) as resp:
+                if resp.status != 200:
+                    print(f"  Erreur HTTP {resp.status}")
+                    return
+                # Understat retourne content-type: text/javascript, pas application/json
+                # resp.json() lèverait ContentTypeError — on parse manuellement
+                data = json.loads(await resp.text())
+            break  # succès
+        except aiohttp.ClientError as e:
+            if tentative == 3:
+                print(f"  Échec après 3 tentatives : {e}")
+                return
+            print(f"  Tentative {tentative}/3 échouée ({e}), retry dans 5s...")
+            await asyncio.sleep(5)
 
     if not data.get("success"):
         print("  Échec : success=false dans la réponse")
@@ -164,10 +181,14 @@ async def fetch_ligue(session: aiohttp.ClientSession, ligue: dict) -> None:
     non_trouves = 0
 
     for joueur in joueurs:
-        nom     = joueur.get("player_name", "")
-        minutes = int(joueur.get("time", 0))
-        buts    = int(joueur.get("goals", 0))
-        passes  = int(joueur.get("assists", 0))
+        nom        = joueur.get("player_name", "")
+        minutes    = int(joueur.get("time", 0))
+        buts       = int(joueur.get("goals", 0))
+        passes     = int(joueur.get("assists", 0))
+        key_passes = float(joueur.get("key_passes", 0))
+        xa         = float(joueur.get("xA", 0))
+        npxg       = float(joueur.get("npxG", 0))
+        shots      = float(joueur.get("shots", 0))
 
         player_id = trouver_joueur_id(nom, index)
         if player_id is None:
@@ -175,7 +196,7 @@ async def fetch_ligue(session: aiohttp.ClientSession, ligue: dict) -> None:
             continue
 
         try:
-            upsert_stats(player_id, minutes, buts, passes)
+            upsert_stats(player_id, minutes, buts, passes, key_passes, xa, npxg, shots)
             mis_a_jour += 1
         except Exception as e:
             print(f"  Erreur upsert {nom} : {e}")
@@ -190,7 +211,9 @@ async def fetch_ligue(session: aiohttp.ClientSession, ligue: dict) -> None:
 async def run() -> None:
     """Lance la collecte des stats pour toutes les ligues, une par une."""
     async with aiohttp.ClientSession() as session:
-        for ligue in LIGUES:
+        for i, ligue in enumerate(LIGUES):
+            if i > 0:
+                await asyncio.sleep(3)
             await fetch_ligue(session, ligue)
 
     print("\nTerminé.")
