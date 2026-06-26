@@ -1,53 +1,146 @@
-# Documentation Technique : Module d'Analyse Prédictive (SmartGamble IA)
+# SmartGamble — Partie IA
 
-Ce document détaille le fonctionnement, la méthodologie et l'architecture du module d'intelligence artificielle développé pour le projet SmartGamble. Ce module a pour but de prédire l'issue des matchs de football en s'appuyant sur l'historique des données stockées dans Supabase.
+## Objectif
 
----
+Prédire le résultat d'un match de football (**victoire domicile / nul / victoire extérieure**) et associer à chaque prédiction un **indice de confiance** affiché dans l'interface.
 
-## 1. Architecture et Flux de Données
-
-Le script data/predict.py suit un flux de traitement de données standard en Data Science (Pipeline ETL + Machine Learning) :
-
-1. Connexion et Extraction (Supabase) : Connexion sécurisée via l'API client Supabase pour récupérer l'intégralité de la table match contenant les données historiques.
-2. Préparation des Données (Pandas) : Nettoyage des valeurs nulles (matchs sans score) et encodage de la cible (Résultat : 2 = Victoire Domicile, 1 = Nul, 0 = Victoire Extérieur).
-3. Validation Chronologique (Backtesting) : Tri des données par date pour simuler un scénario réel de fin de saison.
-4. Entraînement (Scikit-Learn) : Apprentissage du modèle sur la première partie de la saison.
-5. Évaluation (Metrics) : Test des prédictions sur les matchs masqués de fin de saison et calcul de l'Accuracy globale.
+L'IA s'entraîne sur les saisons passées et la 1ère moitié de la saison 2025-26, puis prédit tous les matchs de la 2ème moitié.
 
 ---
 
-## 2. Méthodologie de Validation : Le Backtesting Chronologique
+## Données utilisées
 
-Pour valider scientifiquement l'efficacité de l'IA sans biais de données (sans Data Leakage), nous avons mis en place une séparation temporelle stricte :
+Les données viennent de 3 sources :
 
-* Données d'Entraînement (Début + Mi-Saison) : 70% des matchs les plus anciens. Le modèle utilise les variables home_team_id (Équipe Domicile) et away_team_id (Équipe Extérieur) pour apprendre les dynamiques de victoires/défaites.
-* Données de Test (Fin de Saison) : 30% des matchs les plus récents. Ces données sont totalement masquées à l'IA pendant sa phase d'apprentissage et servent uniquement à évaluer sa performance en conditions réelles.
+| Source | Ce qu'on récupère |
+|---|---|
+| football-data.org | Matchs, scores, dates, statuts |
+| API-Sports | Classements des 5 ligues |
+| Understat *(à venir)* | Expected Goals (xG) |
 
----
-
-## 3. Algorithme Utilisé : Random Forest Classifier
-
-Le modèle s'appuie sur l'algorithme du Forêt Aléatoire (Random Forest) via la bibliothèque sklearn.
-
-### Pourquoi ce choix ?
-* Robustesse : Il combine les prédictions de plusieurs arbres de décision (ici, n_estimators=100) pour réduire le risque de surapprentissage (Overfitting).
-* Adaptabilité : Il gère très bien les variables catégorielles (comme les identifiants uniques des équipes de football) et calcule des probabilités précises pour chacune des 3 issues possibles (Gagnant, Nul, Perdant).
-
----
-
-## 4. Analyse des Résultats Actuels
-
-Lors de la dernière exécution sur la base de données active, les métriques clés sont les suivantes :
-* Volume total analysé : 692 matchs valides.
-* Volume d'entraînement : 484 matchs.
-* Volume de test (Fin de saison) : 208 matchs.
-* Performance Finale (Accuracy) : 38,94 % de prédictions correctes.
-
-### Interprétation mathématique :
-Dans un match de football, la probabilité de deviner l'issue exacte par pur hasard est de 1 sur 3, soit 33,33 %. Avec un score proche de 39 %, le modèle démontre mathématiquement qu'il extrait de l'information utile et qu'il surperforme le hasard pur, validant ainsi la viabilité technique de la Proof of Concept (PoC).
+**État actuel de la base :**
+- 997 matchs terminés avec scores ✓
+- Forme des équipes calculée automatiquement depuis les scores ✓
+- 96 entrées de classement ✓
+- xG et absences : non encore récupérés ✗
 
 ---
 
-## 5. Pistes d'Amélioration (Feuille de Route)
+## Ce qu'on a appris en chemin
 
-Pour augmenter la précision de l'IA et atteindre les standards du marché (viser 60% à 65% de précision)
+### Problème 1 — Les scores avaient le mauvais nom
+Le code cherchait `home_score` mais Supabase stocke `score_home`.  
+Résultat : tous les scores retournaient zéro, le modèle voyait 997 matchs nuls (0-0) et prédisait "nul" à chaque fois avec un Log Loss de 0.0000 — une fausse bonne performance.
+
+### Problème 2 — Une feature inutile
+`home_advantage = 1` était une constante identique pour tous les matchs.  
+Une valeur constante n'apporte aucune information à un modèle.  
+→ Remplacée par `home_win_rate` : le taux de victoires à domicile réel de chaque équipe.
+
+### Problème 3 — XGBoost plantait avec des données limitées
+Avec un split 50/50, le set d'entraînement pouvait ne contenir que 2 résultats sur 3 (ex. : jamais de nul). XGBoost refusait de fonctionner.  
+→ Passage à un split **70/30** + wrapper qui garantit toujours 3 classes en sortie.
+
+### Problème 4 — La forme n'était pas en base
+`home_form` et `away_form` étaient vides pour tous les matchs.  
+→ On la **calcule directement** depuis les scores déjà en base : pour chaque match, on remonte les 5 derniers résultats de chaque équipe **avant** la date du match (pas de fuite de données).
+
+---
+
+## Architecture du pipeline
+
+```
+fetch_matches.py     →  matchs + scores (football-data.org)
+fetch_standings.py   →  classements (API-Sports)
+        ↓
+predict.py
+  ├── Calcul de la forme depuis les scores
+  ├── Calcul du taux de victoires à domicile
+  ├── Entraînement sur les matchs avant le 15/01/2026
+  ├── Sélection du meilleur modèle (Log Loss)
+  └── Prédictions sur tous les matchs après le 15/01/2026
+```
+
+---
+
+## Les 3 modèles testés
+
+### Momentum — *"La forme du moment"*
+> Un Random Forest qui regarde les 5 derniers matchs de chaque équipe.
+
+| Feature | Signification |
+|---|---|
+| `home_win_rate` | L'équipe à domicile gagne-t-elle souvent chez elle ? |
+| `form_diff` | Quelle équipe est en meilleure forme ? |
+| `goal_diff` | Quelle équipe marque le plus en ce moment ? |
+
+### Effectif — *"L'impact des absences"*
+> Un Random Forest qui tient compte des joueurs manquants.
+
+| Feature | Signification |
+|---|---|
+| `home_win_rate` | Avantage domicile |
+| `form_diff` | Forme récente |
+| `abs_count_diff` | Combien de joueurs absents de chaque côté ? |
+| `abs_impact_diff` | Sont-ils importants ? |
+
+### Classement — *"La qualité sur la durée"*
+> Un Gradient Boosting basé sur la position au classement.
+
+| Feature | Signification |
+|---|---|
+| `home_win_rate` | Avantage domicile |
+| `rank_diff` | Différence de rang entre les deux équipes |
+| `points_diff` | Différence de points |
+| `goal_diff_season` | Différentiel de buts sur la saison |
+
+---
+
+## Résultats
+
+### Métriques sur le split 70/30 chronologique
+
+| Modèle | Log Loss | Accuracy |
+|---|---|---|
+| **Momentum** *(retenu)* | **1.075** | **50.3 %** |
+| Effectif | 1.190 | 48.0 % |
+| Classement | 1.255 | 45.7 % |
+| *Hasard pur (3 classes)* | *1.099* | *33.3 %* |
+
+### Ce que ça veut dire
+
+- **50 % de bonnes prédictions** contre 33 % au hasard → le modèle apprend vraiment quelque chose.
+- Le **Log Loss de 1.075** est légèrement en dessous de la baseline aléatoire (1.099) → les probabilités sont bien calibrées.
+- Les meilleurs modèles au monde sur ce problème plafonnent à ~55-60 % : le football reste très imprévisible.
+- Les modèles Effectif et Classement sont moins bons car les données d'absences sont encore vides et les noms d'équipes entre les deux APIs ne correspondent pas encore parfaitement.
+
+### Exemple de prédictions (matchs à venir)
+
+| Match | DOM | NUL | EXT | Conf. | Prédiction |
+|---|---|---|---|---|---|
+| FC Nantes vs Toulouse FC | 18 % | 30 % | 51 % | 27 % | Victoire extérieure |
+| Villarreal CF vs Atlético | 41 % | 28 % | 31 % | 11 % | Victoire domicile |
+| Troyes vs Le Mans | 1 % | 97 % | 2 % | 96 % | ⚠️ Nul (équipes inconnues) |
+
+> **Troyes vs Le Mans** : ces deux équipes n'ont aucun historique en base → `form_diff = 0`, `goal_diff = 0`. Le modèle ne les distingue pas et prédit un nul à 97 %. C'est la principale limite actuelle : il faut des données sur la saison 2025-26.
+
+---
+
+## Prochaines étapes
+
+| Priorité | Action |
+|---|---|
+| 🔴 | Lancer `fetch_matches.py` saison 2025 pour récupérer les matchs 2025-26 |
+| 🔴 | Corriger le matching des noms d'équipes entre APIs |
+| 🟡 | Récupérer les Expected Goals (xG) via Understat |
+| 🟡 | Récupérer les compositions et absences via football-data.org |
+| 🟢 | Afficher la confiance dans le frontend (contour coloré autour de la cote) |
+
+---
+
+## Lancer le pipeline
+
+```bash
+python data/fetch_standings.py   # classements
+python data/predict.py           # entraînement + prédictions
+```

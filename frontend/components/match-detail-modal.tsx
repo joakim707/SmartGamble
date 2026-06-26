@@ -174,31 +174,62 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
             </div>
           </div>
 
-          {/* Confidence Score */}
-          {confidence && (
-            <div className="bg-secondary/50 rounded-xl p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className={cn("h-5 w-5", confidence.color)} />
-                  <span className="font-medium text-foreground">Indice de confiance</span>
-                </div>
-                <div className="text-right">
-                  <span className={cn("text-2xl font-bold", confidence.color)}>
-                    {match.confidenceScore}%
-                  </span>
-                  <p className="text-xs text-muted-foreground">{confidence.label}</p>
-                </div>
+          {/* Prédiction IA */}
+          {(match.aiProbs || confidence) && (
+            <div className="bg-secondary/50 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-primary" />
+                <span className="font-medium text-foreground">Prédiction IA</span>
+                <span className="text-xs text-muted-foreground ml-auto">modèle Momentum</span>
               </div>
-              <div className="mt-3 h-2 bg-muted rounded-full overflow-hidden">
-                <div 
-                  className={cn("h-full rounded-full transition-all", 
-                    match.confidenceScore! >= 80 ? "bg-green-500" :
-                    match.confidenceScore! >= 65 ? "bg-emerald-500" :
-                    match.confidenceScore! >= 50 ? "bg-yellow-500" : "bg-red-500"
-                  )}
-                  style={{ width: `${match.confidenceScore}%` }}
-                />
-              </div>
+
+              {/* Probabilités par issue */}
+              {match.aiProbs && (
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { label: '1 Dom.', prob: match.aiProbs.home, result: 0 as const },
+                    { label: 'X Nul',  prob: match.aiProbs.draw, result: 1 as const },
+                    { label: '2 Ext.', prob: match.aiProbs.away, result: 2 as const },
+                  ] as const).map(({ label, prob, result }) => (
+                    <div key={result} className={cn(
+                      'flex flex-col items-center py-2 px-1 rounded-lg',
+                      match.predictedResult === result
+                        ? 'ring-2 ring-primary bg-primary/10'
+                        : 'bg-muted/30',
+                    )}>
+                      <span className="text-[10px] text-muted-foreground mb-0.5">{label}</span>
+                      <span className={cn(
+                        'text-lg font-bold',
+                        match.predictedResult === result ? 'text-primary' : 'text-foreground',
+                      )}>
+                        {prob}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Barre de confiance */}
+              {confidence && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">Confiance</span>
+                    <span className={cn('text-sm font-bold', confidence.color)}>
+                      {match.confidenceScore}% — {confidence.label}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className={cn('h-full rounded-full transition-all',
+                        match.confidenceScore! >= 80 ? 'bg-green-500' :
+                        match.confidenceScore! >= 65 ? 'bg-emerald-500' :
+                        match.confidenceScore! >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+                      )}
+                      style={{ width: `${match.confidenceScore}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -214,9 +245,9 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
                   <thead>
                     <tr className="border-b border-border">
                       <th className="text-left py-2 text-sm font-medium text-muted-foreground">Bookmaker</th>
-                      <th className="text-center py-2 text-sm font-medium text-muted-foreground">1</th>
-                      <th className="text-center py-2 text-sm font-medium text-muted-foreground">X</th>
-                      <th className="text-center py-2 text-sm font-medium text-muted-foreground">2</th>
+                      <th className={cn('text-center py-2 text-sm font-medium', match.predictedResult === 0 ? 'text-primary' : 'text-muted-foreground')}>1</th>
+                      <th className={cn('text-center py-2 text-sm font-medium', match.predictedResult === 1 ? 'text-primary' : 'text-muted-foreground')}>X</th>
+                      <th className={cn('text-center py-2 text-sm font-medium', match.predictedResult === 2 ? 'text-primary' : 'text-muted-foreground')}>2</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -224,17 +255,17 @@ export function MatchDetailModal({ match, open, onClose }: MatchDetailModalProps
                       <tr key={bk.name} className="border-b border-border/50">
                         <td className="py-3 text-sm font-medium text-foreground">{bk.name}</td>
                         <td className="py-3 text-center">
-                          <span className="px-3 py-1 bg-[var(--odds-bg)] rounded text-sm font-bold text-foreground">
+                          <span className={cn('px-3 py-1 rounded text-sm font-bold text-foreground', match.predictedResult === 0 ? 'ring-2 ring-primary bg-primary/10' : 'bg-[var(--odds-bg)]')}>
                             {bk.home.toFixed(2)}
                           </span>
                         </td>
                         <td className="py-3 text-center">
-                          <span className="px-3 py-1 bg-[var(--odds-bg)] rounded text-sm font-bold text-foreground">
+                          <span className={cn('px-3 py-1 rounded text-sm font-bold text-foreground', match.predictedResult === 1 ? 'ring-2 ring-primary bg-primary/10' : 'bg-[var(--odds-bg)]')}>
                             {bk.draw.toFixed(2)}
                           </span>
                         </td>
                         <td className="py-3 text-center">
-                          <span className="px-3 py-1 bg-[var(--odds-bg)] rounded text-sm font-bold text-foreground">
+                          <span className={cn('px-3 py-1 rounded text-sm font-bold text-foreground', match.predictedResult === 2 ? 'ring-2 ring-primary bg-primary/10' : 'bg-[var(--odds-bg)]')}>
                             {bk.away.toFixed(2)}
                           </span>
                         </td>
