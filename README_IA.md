@@ -98,6 +98,31 @@ predict.py
 
 ## Résultats
 
+### Calcul de l'indice de confiance
+
+Le modèle produit 3 probabilités pour chaque match — par exemple : **60 % domicile, 25 % nul, 15 % extérieur**.
+
+L'indice de confiance mesure à quel point le modèle est *sûr de lui* par rapport à un choix aléatoire.  
+Un choix au hasard entre 3 issues donnerait 33 % à chacune — c'est le plancher.
+
+La formule :
+
+```
+confiance = (probabilité_max - 33 %) / (100 % - 33 %) × 100
+```
+
+**Exemple :** probabilité max = 60 %
+```
+confiance = (60 - 33) / (100 - 33) × 100 = 40 %
+```
+
+Interprétation :
+- **0 %** → le modèle est aussi incertain qu'un pile ou face à 3 faces
+- **100 %** → le modèle attribue 100 % de chance à une seule issue (cas théorique)
+- **En pratique** : la plupart des matchs sont entre 10 % et 40 % de confiance, ce qui reflète l'imprévisibilité naturelle du football
+
+---
+
 ### Métriques sur le split 70/30 chronologique
 
 | Modèle | Log Loss | Accuracy |
@@ -134,7 +159,7 @@ predict.py
 | 🔴 | Corriger le matching des noms d'équipes entre APIs |
 | 🟡 | Récupérer les Expected Goals (xG) via Understat |
 | 🟡 | Récupérer les compositions et absences via football-data.org |
-| 🟢 | Afficher la confiance dans le frontend (contour coloré autour de la cote) |
+| ✅ | Afficher la confiance dans le frontend (contour coloré autour de la cote) |
 
 ---
 
