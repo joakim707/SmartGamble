@@ -195,7 +195,7 @@ async def process_match(session: aiohttp.ClientSession, match_row: dict) -> bool
 # Point d'entrée
 # ================================
 
-async def run() -> None:
+async def run(leagues_filter: list[str] | None = None) -> None:
     """
     Parcourt les matchs terminés avec fd_match_id et importe leurs compositions.
     Les matchs déjà traités sont ignorés. Pause de 6.5s entre chaque requête
@@ -221,7 +221,19 @@ async def run() -> None:
     print(f"{len(deja_traites)} matchs déjà importés, ignorés")
 
     a_traiter = [m for m in tous_les_matchs if m["id"] not in deja_traites]
+
+    if leagues_filter:
+        a_traiter = [m for m in a_traiter if m["league"] in leagues_filter]
+        print(f"Filtre ligues : {', '.join(leagues_filter)}")
+
+    # Prioriser les ligues peu couvertes pour ne pas s'arrêter avant de les atteindre
+    PRIORITY = ["Ligue 1", "Serie A", "Bundesliga", "La Liga", "Premier League"]
+    a_traiter.sort(key=lambda m: PRIORITY.index(m["league"]) if m["league"] in PRIORITY else 99)
+
     print(f"{len(a_traiter)} matchs à traiter")
+    for lg in PRIORITY:
+        n = sum(1 for m in a_traiter if m["league"] == lg)
+        if n: print(f"  {lg}: {n} matchs")
     print(f"Durée estimée : ~{len(a_traiter) * PAUSE_SECONDES / 60:.0f} min (limite 10 req/min)\n")
 
     if not a_traiter:
@@ -239,4 +251,7 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    import sys
+    # Usage optionnel : python fetch_lineups.py "Ligue 1" "Serie A"
+    leagues_filter = sys.argv[1:] if len(sys.argv) > 1 else None
+    asyncio.run(run(leagues_filter))

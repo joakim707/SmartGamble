@@ -1,11 +1,9 @@
 'use client'
 
-import { Header } from '@/components/header'
-import { LeagueSelector } from '@/components/league-selector'
 import { LEAGUES, Match } from '@/lib/types'
-import { getUpcomingMatches } from '@/lib/api' // <-- NOUVEAU: Import des vraies données
-import { useState, useMemo, useEffect } from 'react' // <-- NOUVEAU: Ajout de useEffect
-import { BarChart3, Check, ArrowUpRight, Trophy } from 'lucide-react'
+import { getUpcomingMatches } from '@/lib/api'
+import { useState, useMemo, useEffect } from 'react'
+import { BarChart3, Check, Trophy, ArrowUpRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import Image from 'next/image'
 

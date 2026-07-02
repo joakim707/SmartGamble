@@ -87,6 +87,31 @@ export async function getMatches(
     return []
   }
 
+  // Récupérer la forme des équipes impliquées (5 derniers matchs terminés avant la période)
+  const teamIds = [...new Set<number>(data.flatMap((m: any) => [m.home_team.id, m.away_team.id]))]
+  const { data: recentMatches } = await supabase
+    .from('match')
+    .select('home_team_id, away_team_id, score_home, score_away')
+    .eq('status', 'finished')
+    .lt('match_date', to)
+    .or(teamIds.map(id => `home_team_id.eq.${id},away_team_id.eq.${id}`).join(','))
+    .order('match_date', { ascending: false })
+
+  const formMap = new Map<number, string>()
+  for (const id of teamIds) {
+    const teamMatches = (recentMatches || [])
+      .filter((m: any) => m.home_team_id === id || m.away_team_id === id)
+      .slice(0, 5)
+    const form = teamMatches.map((m: any) => {
+      const isHome   = m.home_team_id === id
+      const scored   = isHome ? m.score_home : m.score_away
+      const conceded = isHome ? m.score_away : m.score_home
+      if (scored == null || conceded == null) return 'D'
+      return scored > conceded ? 'W' : scored < conceded ? 'L' : 'D'
+    }).join('')
+    formMap.set(id, form)
+  }
+
   return data.map((m: any): Match => ({
     id:        m.id,
     league:    m.league,
@@ -94,6 +119,8 @@ export async function getMatches(
     status:    m.status as Match['status'],
     scoreHome: m.score_home ?? undefined,
     scoreAway: m.score_away ?? undefined,
+    homeForm:  formMap.get(m.home_team.id) || '',
+    awayForm:  formMap.get(m.away_team.id) || '',
     homeTeam: {
       id:        m.home_team.id,
       name:      m.home_team.name,
@@ -109,6 +136,11 @@ export async function getMatches(
       league:    m.league,
     },
   }))
+}
+
+// Alias pour le comparateur : matchs de la semaine courante
+export async function getUpcomingMatches(): Promise<Match[]> {
+  return getMatches(null, 'week', new Date())
 }
 
 // ─── Forme des équipes (1 seule requête) ──────────────────────────────────────
