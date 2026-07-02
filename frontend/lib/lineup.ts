@@ -117,17 +117,33 @@ async function getRealLineup(
 }
 
 /**
- * Retourne la composition SofaScore d'une équipe pour un match.
- * Retourne [] si la compo n'est pas encore disponible (fetch_lineups pas encore passé).
- * L'algo maison n'est plus utilisé pour générer la compo — uniquement pour les
- * joueurs clés (getKeyPlayers) et l'impact des absents (getAbsentImpact).
+ * Retourne la composition d'une équipe pour un match.
+ * Si la compo réelle est disponible en BDD, on la retourne.
+ * Sinon on retourne le dernier XI connu (match précédent) comme estimation.
  */
 export async function getProbableLineup(
   matchId: number,
   teamId: number,
   season = DEFAULT_SEASON,
+  matchDate?: string,
 ): Promise<LineupPlayer[]> {
-  return getRealLineup(matchId, teamId)
+  const real = await getRealLineup(matchId, teamId)
+  if (real.length > 0) return real
+
+  if (!matchDate) return []
+
+  const { data: lastMatch } = await supabase
+    .from('match')
+    .select('id')
+    .or(`home_team_id.eq.${teamId},away_team_id.eq.${teamId}`)
+    .eq('status', 'finished')
+    .lt('match_date', matchDate)
+    .order('match_date', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (!lastMatch) return []
+  return getRealLineup(lastMatch.id, teamId)
 }
 
 // ─── B) Joueurs clés ─────────────────────────────────────────────────────────
@@ -190,14 +206,40 @@ function ptsEquipe(
 export async function getKeyPlayers(
   teamId: number,
   _season = DEFAULT_SEASON,
+  beforeDate?: string, // ISO — si fourni, on ne regarde que les LOOKBACK matchs avant cette date
+  lookback = 5,
 ): Promise<KeyPlayer[]> {
 
-  // ── Étape 1 : récupérer toutes les entrées lineup pour cette équipe ──────
-  // On a besoin de : qui est titulaire, dans quel match, et qui est absent
-  const { data: lineupRows } = await supabase
+  // ── Étape 1 : déterminer les match_id à considérer ───────────────────────
+  // Si beforeDate fourni : prendre les `lookback` derniers matchs terminés avant cette date.
+  // Sinon : prendre tous les matchs de l'équipe en BDD (comportement saison entière).
+  let relevantMatchIds: Set<number> | null = null
+
+  if (beforeDate) {
+    const { data: recentMatches } = await supabase
+      .from('match')
+      .select('id')
+      .or(`home_team_id.eq.${teamId},away_team_id.eq.${teamId}`)
+      .eq('status', 'finished')
+      .lt('match_date', beforeDate)
+      .order('match_date', { ascending: false })
+      .limit(lookback)
+
+    if (!recentMatches || recentMatches.length === 0) return []
+    relevantMatchIds = new Set(recentMatches.map((m: any) => m.id))
+  }
+
+  // ── Étape 2 : récupérer les entrées lineup pour cette équipe ─────────────
+  let lineupQuery = supabase
     .from('lineup')
     .select('player_id, match_id, is_starter, is_absent')
     .eq('team_id', teamId)
+
+  if (relevantMatchIds) {
+    lineupQuery = lineupQuery.in('match_id', [...relevantMatchIds])
+  }
+
+  const { data: lineupRows } = await lineupQuery
 
   if (!lineupRows || lineupRows.length === 0) return []
 
@@ -230,7 +272,7 @@ export async function getKeyPlayers(
       .in('id', allIds),
 
     supabase.from('player_stats')
-      .select('player_id, minutes_played')
+      .select('player_id, minutes_played, goals')
       .in('player_id', allIds),
 
     // Tous les matchs terminés de cette équipe (pour calculer pts_avec / pts_sans)
@@ -242,11 +284,16 @@ export async function getKeyPlayers(
 
   if (!players) return []
 
-  // Index minutes par joueur
+  // Index minutes + buts par joueur
   const minutesMap = new Map<number, number>()
+  const goalsMap   = new Map<number, number>()
   for (const s of statsRows ?? []) {
     minutesMap.set(s.player_id, s.minutes_played ?? 0)
+    goalsMap.set(s.player_id, s.goals ?? 0)
   }
+
+  // Max buts dans l'équipe (pour normaliser scoreGoals)
+  const maxTeamGoals = Math.max(1, ...allIds.map(id => goalsMap.get(id) ?? 0))
 
   // ── Étape 5 : précalculer les résultats de l'équipe match par match ──────
   // On associe chaque match_id terminé → pts de l'équipe
@@ -264,28 +311,30 @@ export async function getKeyPlayers(
     .map(p => {
       const nbTitu   = nbTituParJoueur.get(p.id) ?? 0
       const minutes  = minutesMap.get(p.id) ?? 0
+      const goals    = goalsMap.get(p.id) ?? 0
       const avecIds  = matchsAvecJoueur.get(p.id) ?? new Set()
       const estGardien = p.position === 'Goalkeeper'
 
-      // Composante 1 — Régularité : nb titularisations normalisé sur totalMatchs
+      // Composante 1 — Régularité
       const scoreTitu = nbTitu / totalMatchs
 
-      // Composante 2 — Temps de jeu : minutes jouées normalisées sur totalMatchs × 90 min
+      // Composante 2 — Temps de jeu
       const maxMinutes = totalMatchs * 90
       const scoreMinutes = maxMinutes > 0 ? Math.min(minutes / maxMinutes, 1) : 0
 
-      // Composante 3 — Impact sur les résultats (joueurs de champ uniquement)
-      let scoreImpact = -1 // -1 = non calculable (gardien ou données insuffisantes)
+      // Composante 3 — Buts (normalisés sur le meilleur buteur de l'équipe)
+      // Gardiens exclus (un gardien qui marque reste anecdotique)
+      const scoreGoals = estGardien ? 0 : goals / maxTeamGoals
+
+      // Composante 4 — Impact sur les résultats
+      let scoreImpact = -1
       let scoreFinal  = 0
 
       if (!estGardien) {
-        // Matchs terminés où le joueur était titulaire
         const ptsAvecList = [...avecIds]
           .map(mid => ptsParMatch.get(mid))
           .filter((v): v is number => v !== undefined)
 
-        // Matchs terminés où le joueur figure dans le lineup mais N'EST PAS titulaire
-        // (= matchs où l'équipe a joué et lui n'était pas là)
         const matchsSansJoueur = lineupRows
           .filter((r: any) => !avecIds.has(r.match_id))
           .map((r: any) => r.match_id)
@@ -297,25 +346,21 @@ export async function getKeyPlayers(
         const ptsMoyAvec = ptsAvecList.length > 0
           ? ptsAvecList.reduce((a, b) => a + b, 0) / ptsAvecList.length
           : null
-
         const ptsMoySans = ptsSansList.length > 0
           ? ptsSansList.reduce((a, b) => a + b, 0) / ptsSansList.length
           : null
 
         if (ptsMoyAvec !== null && ptsMoySans !== null) {
-          // Normalisation : l'écart max théorique est 3 pts (toujours victoire vs toujours défaite)
-          // On ramène l'écart brut ([-3, 3]) vers [0, 1] pour rester dans la même échelle que les autres
           const ecartBrut = ptsMoyAvec - ptsMoySans
-          scoreImpact = (ecartBrut + 3) / 6  // → [0, 1] avec 0.5 = neutre
+          scoreImpact = (ecartBrut + 3) / 6
 
-          // score_final avec les 3 composantes à poids égaux
-          scoreFinal = scoreTitu * 0.33 + scoreMinutes * 0.33 + scoreImpact * 0.33
+          // 4 composantes à poids égaux : régularité + minutes + buts + impact résultats
+          scoreFinal = scoreTitu * 0.25 + scoreMinutes * 0.25 + scoreGoals * 0.25 + scoreImpact * 0.25
         } else {
-          // Données insuffisantes pour calculer l'impact → fallback 50/50
-          scoreFinal = scoreTitu * 0.5 + scoreMinutes * 0.5
+          // Données insuffisantes pour l'impact → fallback sans scoreImpact
+          scoreFinal = scoreTitu * 0.33 + scoreMinutes * 0.33 + scoreGoals * 0.33
         }
       } else {
-        // Gardien : seulement régularité + temps de jeu
         scoreFinal = scoreTitu * 0.5 + scoreMinutes * 0.5
       }
 

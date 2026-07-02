@@ -123,17 +123,31 @@ export async function getMatches(
     return []
   }
 
-  // Récupérer les prédictions IA (modèle momentum) pour ces matchs
-  const matchIds = data.map((m: any) => m.id)
-  const predMap: Record<number, { confidence: number; predicted_result: number; prob_home: number; prob_draw: number; prob_away: number }> = {}
-  try {
-    const { data: preds } = await supabase
-      .from('predictions')
-      .select('match_id, confidence, predicted_result, prob_home, prob_draw, prob_away')
-      .in('match_id', matchIds)
-      .eq('model_name', 'momentum')
-    for (const p of (preds ?? [])) predMap[p.match_id] = p
-  } catch {}
+  // Forme des équipes : 5 derniers matchs terminés avant la fin de la période
+  const teamIds = [...new Set<number>(data.flatMap((m: any) => [m.home_team.id, m.away_team.id]))]
+  const { data: recentMatches } = await supabase
+    .from('match')
+    .select('home_team_id, away_team_id, score_home, score_away')
+    .eq('status', 'finished')
+    .not('fd_match_id', 'is', null)
+    .lt('match_date', to)
+    .or(teamIds.map(id => `home_team_id.eq.${id},away_team_id.eq.${id}`).join(','))
+    .order('match_date', { ascending: false })
+
+  const formMap = new Map<number, string>()
+  for (const id of teamIds) {
+    const form = (recentMatches || [])
+      .filter((m: any) => m.home_team_id === id || m.away_team_id === id)
+      .slice(0, 5)
+      .map((m: any) => {
+        const isHome   = m.home_team_id === id
+        const scored   = isHome ? m.score_home : m.score_away
+        const conceded = isHome ? m.score_away : m.score_home
+        if (scored == null || conceded == null) return 'D'
+        return scored > conceded ? 'W' : scored < conceded ? 'L' : 'D'
+      }).join('')
+    formMap.set(id, form)
+  }
 
   return data.map((m: any): Match => ({
     id:        m.id,
@@ -142,13 +156,8 @@ export async function getMatches(
     status:    m.status as Match['status'],
     scoreHome: m.score_home ?? undefined,
     scoreAway: m.score_away ?? undefined,
-    confidenceScore: predMap[m.id] ? Math.round(predMap[m.id].confidence) : undefined,
-    predictedResult: predMap[m.id]?.predicted_result as 0 | 1 | 2 | undefined,
-    aiProbs: predMap[m.id] ? {
-      home: Math.round(predMap[m.id].prob_home * 100),
-      draw: Math.round(predMap[m.id].prob_draw * 100),
-      away: Math.round(predMap[m.id].prob_away * 100),
-    } : undefined,
+    homeForm:  formMap.get(m.home_team.id) || '',
+    awayForm:  formMap.get(m.away_team.id) || '',
     homeTeam: {
       id:        m.home_team.id,
       name:      m.home_team.name,
@@ -164,7 +173,10 @@ export async function getMatches(
       league:    m.league,
     },
   }))
-  return data.map(rowToMatch)
+}
+
+export async function getUpcomingMatches(): Promise<Match[]> {
+  return getMatches(null, 'week', new Date())
 }
 
 // ── Forme des équipes ────────────────────────────────────────────────────────
