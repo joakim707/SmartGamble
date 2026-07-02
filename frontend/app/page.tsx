@@ -9,12 +9,12 @@ import { Match, LEAGUES } from '@/lib/types'
 import { getMatches, getLatestMatchDate, Period } from '@/lib/api'
 
 export default function HomePage() {
-  const [matches, setMatches]           = useState<Match[]>([])
-  const [isLoading, setIsLoading]       = useState(true)
+  const [matches, setMatches]               = useState<Match[]>([])
+  const [isLoading, setIsLoading]           = useState(true)
   const [selectedLeague, setSelectedLeague] = useState('all')
   const [selectedMatch, setSelectedMatch]   = useState<Match | null>(null)
-  const [period, setPeriod]   = useState<Period>('week')
-  const [refDate, setRefDate] = useState<Date | null>(null)
+  const [period, setPeriod]                 = useState<Period>('week')
+  const [refDate, setRefDate]               = useState<Date | null>(null)
 
   const leagueName = LEAGUES.find(l => l.id === selectedLeague)?.name ?? null
 
@@ -35,10 +35,6 @@ export default function HomePage() {
   function handlePeriodChange(p: Period, d: Date) {
     setPeriod(p)
     setRefDate(d)
-  }
-
-  function handleLeagueChange(id: string) {
-    setSelectedLeague(id)
   }
 
   return (
@@ -67,7 +63,7 @@ export default function HomePage() {
             <div className="flex flex-col items-center py-20 gap-2">
               <p className="text-muted-foreground">Aucun match sur cette période.</p>
               <button
-                onClick={() => handlePeriodChange('month', refDate)}
+                onClick={() => handlePeriodChange('month', refDate!)}
                 className="text-sm text-primary hover:underline"
               >
                 Voir le mois complet

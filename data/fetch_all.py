@@ -33,19 +33,21 @@ def run(label: str, fn):
 
 def main():
     # Import ici pour que chaque module charge son .env indépendamment
-    from fetch_matches import fetch_and_store_matches
-    from fetch_odds    import fetch_and_store_odds
-    from fetch_form    import run as fetch_form
-    from fetch_lineups import run as fetch_lineups
+    from fetch_matches   import fetch_and_store_matches
+    from fetch_odds      import fetch_and_store_odds
+    from fetch_form      import run as fetch_form
+    from fetch_standings import run as fetch_standings
+    from fetch_lineups   import run as fetch_lineups
 
     run("1/5 — Matchs & équipes",   fetch_and_store_matches)
     run("2/5 — Cotes",              fetch_and_store_odds)
     run("3/5 — Forme des équipes",  fetch_form)
-    run("4/5 — Effectifs joueurs",  fetch_lineups)
+    run("4/5 — Classements",        fetch_standings)
+    run("5/6 — Effectifs joueurs",  fetch_lineups)
 
     # fetch_stats est async
     print(f"\n{'='*50}")
-    print("  5/5 — Stats joueurs (Understat)")
+    print("  6/6 — Stats joueurs (Understat)")
     print(f"{'='*50}")
     start = time.time()
     try:
