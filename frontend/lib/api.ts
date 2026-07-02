@@ -123,6 +123,47 @@ export async function getMatches(
     return []
   }
 
+  // Récupérer les prédictions IA (modèle momentum) pour ces matchs
+  const matchIds = data.map((m: any) => m.id)
+  const predMap: Record<number, { confidence: number; predicted_result: number; prob_home: number; prob_draw: number; prob_away: number }> = {}
+  try {
+    const { data: preds } = await supabase
+      .from('predictions')
+      .select('match_id, confidence, predicted_result, prob_home, prob_draw, prob_away')
+      .in('match_id', matchIds)
+      .eq('model_name', 'momentum')
+    for (const p of (preds ?? [])) predMap[p.match_id] = p
+  } catch {}
+
+  return data.map((m: any): Match => ({
+    id:        m.id,
+    league:    m.league,
+    matchDate: m.match_date,
+    status:    m.status as Match['status'],
+    scoreHome: m.score_home ?? undefined,
+    scoreAway: m.score_away ?? undefined,
+    confidenceScore: predMap[m.id] ? Math.round(predMap[m.id].confidence) : undefined,
+    predictedResult: predMap[m.id]?.predicted_result as 0 | 1 | 2 | undefined,
+    aiProbs: predMap[m.id] ? {
+      home: Math.round(predMap[m.id].prob_home * 100),
+      draw: Math.round(predMap[m.id].prob_draw * 100),
+      away: Math.round(predMap[m.id].prob_away * 100),
+    } : undefined,
+    homeTeam: {
+      id:        m.home_team.id,
+      name:      m.home_team.name,
+      shortName: m.home_team.short_name || m.home_team.name.substring(0, 3).toUpperCase(),
+      logoUrl:   m.home_team.logo_url || '',
+      league:    m.league,
+    },
+    awayTeam: {
+      id:        m.away_team.id,
+      name:      m.away_team.name,
+      shortName: m.away_team.short_name || m.away_team.name.substring(0, 3).toUpperCase(),
+      logoUrl:   m.away_team.logo_url || '',
+      league:    m.league,
+    },
+  }))
   return data.map(rowToMatch)
 }
 

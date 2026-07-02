@@ -26,6 +26,8 @@ export interface Match {
   scoreAway?: number
   odds?: MatchOdds
   confidenceScore?: number
+  predictedResult?: 0 | 1 | 2
+  aiProbs?: { home: number; draw: number; away: number }
   homeForm?: string
   awayForm?: string
 }
