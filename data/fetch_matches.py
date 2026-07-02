@@ -1,21 +1,23 @@
 """
-Récupère les matchs des 5 grands championnats depuis football-data.org
+Récupère les matchs des 5 grands championnats depuis SofaScore
 et les stocke dans la table 'match' de Supabase.
 
-football-data.org est une API REST officielle et gratuite (tier 1 : 10 req/min).
-Elle couvre les 5 grandes ligues européennes avec résultats, scores et calendrier.
+Flow : pour chaque championnat → navigue vers la page du tournoi
+       → intercepte la réponse native /events/round/N (round actuel)
+       → ouvre le dropdown de round (click force=True pour passer les modals)
+       → itère sur tous les rounds disponibles en cliquant chaque option
+       → intercepte chaque réponse /events/round/N
+       → upsert équipes + matchs avec sofascore_id + sofa_match_url
 
-Flow : pour chaque ligue
-       → GET /v4/competitions/{code}/matches?season=2024
-       → upsert équipes dans 'team'
-       → upsert matchs dans 'match' avec fd_match_id comme clé
+Bypass Cloudflare : on intercepte les requêtes que SofaScore émet lui-même
+via page.on("response", …). Ces requêtes sont natives au navigateur —
+TLS réel, cookies CF présents — elles passent là où fetch() injecté échoue.
 """
 
-import asyncio
 import os
-from datetime import datetime
-
-import aiohttp
+import re
+import time
+from datetime import datetime, timezone
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -24,181 +26,429 @@ load_dotenv()
 # ================================
 # Configuration
 # ================================
-
-SUPABASE_URL         = os.getenv("SUPABASE_URL")
-SUPABASE_KEY         = os.getenv("SUPABASE_KEY")
-FOOTBALL_DATA_TOKEN  = os.getenv("FOOTBALL_DATA_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# football-data.org identifie les saisons par l'année de début : 2024 = 2024-25
-SAISON = "2025"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
-# Codes de compétition football-data.org → noms affichés en BDD
-LIGUES = {
-    "PL":  "Premier League",   # Premier League (Angleterre)
-    "PD":  "La Liga",          # Primera Division (Espagne)
-    "BL1": "Bundesliga",       # 1. Bundesliga (Allemagne)
-    "SA":  "Serie A",          # Serie A (Italie)
-    "FL1": "Ligue 1",          # Ligue 1 (France)
+# IDs SofaScore des championnats — saison 2025/2026
+CHAMPIONNATS_SOFA = {
+    "Premier League": {"tournament_id": 17, "season_id": 76986, "slug": "football/england/premier-league/17"},
+    "Ligue 1":        {"tournament_id": 34, "season_id": 77356, "slug": "football/france/ligue-1/34"},
+    "La Liga":        {"tournament_id": 8,  "season_id": 77559, "slug": "football/spain/laliga/8"},
+    "Serie A":        {"tournament_id": 23, "season_id": 76457, "slug": "football/italy/serie-a/23"},
+    "Bundesliga":     {"tournament_id": 35, "season_id": 77333, "slug": "football/germany/bundesliga/35"},
 }
 
-# Mapping statut football-data.org → notre convention
+# Correspondance statut SofaScore → notre convention
 STATUS_MAP = {
-    "SCHEDULED":  "upcoming",
-    "TIMED":      "upcoming",
-    "IN_PLAY":    "live",
-    "PAUSED":     "live",
-    "FINISHED":   "finished",
-    "CANCELLED":  "cancelled",
-    "POSTPONED":  "cancelled",
-    "SUSPENDED":  "cancelled",
-    "AWARDED":    "finished",
+    "notstarted":  "upcoming",
+    "inprogress":  "live",
+    "finished":    "finished",
+    "cancelled":   "cancelled",
+    "postponed":   "cancelled",
+    "interrupted": "cancelled",
+    "abandoned":   "cancelled",
 }
 
-# En-têtes HTTP requis par football-data.org
-def _headers() -> dict:
-    return {"X-Auth-Token": FOOTBALL_DATA_TOKEN}
-
 
 # ================================
-# Helpers Supabase
+# Helpers
 # ================================
 
-def upsert_equipe(nom: str, nom_court: str, ligue: str, logo_url: str = "") -> int:
+# Noms SofaScore -> noms football-data.org pour éviter les doublons d'équipes
+TEAM_NAME_ALIASES = {
+    "Real Madrid":              "Real Madrid CF",
+    "Atletico Madrid":          "Atletico de Madrid",
+    "Atletico de Madrid":       "Atletico de Madrid",
+    "Sevilla":                  "Sevilla FC",
+    "Rayo Vallecano":           "Rayo Vallecano de Madrid",
+    "Elche":                    "Elche CF",
+    "Valencia":                 "Valencia CF",
+    "Getafe":                   "Getafe CF",
+    "Real Sociedad":            "Real Sociedad de Fútbol",
+    "Espanyol":                 "RCD Espanyol de Barcelona",
+    "Villarreal":               "Villarreal CF",
+    "Osasuna":                  "CA Osasuna",
+    "Real Betis":               "Real Betis Balompié",
+    "Mallorca":                 "RCD Mallorca",
+    "1. FC Heidenheim":         "1. FC Heidenheim 1846",
+    "FC St. Pauli":             "FC St. Pauli 1910",
+    "Bournemouth":              "AFC Bournemouth",
+    "West Ham United":          "West Ham United FC",
+    "Arsenal":                  "Arsenal FC",
+    "Aston Villa":              "Aston Villa FC",
+    "Brentford":                "Brentford FC",
+    "Burnley":                  "Burnley FC",
+    "Sunderland":               "Sunderland AFC",
+    "Chelsea":                  "Chelsea FC",
+    "Crystal Palace":           "Crystal Palace FC",
+    "Everton":                  "Everton FC",
+    "Wolverhampton":            "Wolverhampton Wanderers FC",
+    "Manchester United":        "Manchester United FC",
+    "Brighton & Hove Albion":   "Brighton & Hove Albion FC",
+    "Manchester City":          "Manchester City FC",
+    "Leeds United":             "Leeds United FC",
+    "Newcastle United":         "Newcastle United FC",
+    "Tottenham Hotspur":        "Tottenham Hotspur FC",
+    "Nottingham Forest":        "Nottingham Forest FC",
+    "Fulham":                   "Fulham FC",
+    "RC Strasbourg":            "RC Strasbourg Alsace",
+    "AS Monaco":                "Monaco",
+    "Stade Brestois":           "Stade Brestois 29",
+    "Stade Rennais":            "Stade Rennais FC 1901",
+    "RC Lens":                  "Lens",
+    "Lorient":                  "FC Lorient",
+    "Paris Saint-Germain":      "Paris Saint-Germain FC",
+    "Sassuolo":                 "US Sassuolo Calcio",
+    "Lecce":                    "US Lecce",
+    "Genoa":                    "Genoa CFC",
+}
+
+
+def upsert_team(team_data: dict, league_name: str) -> int:
     """
-    Insère l'équipe si elle n'existe pas encore, ou met à jour son logo.
-    Recherche par nom exact pour éviter les doublons.
+    Insère ou met à jour une équipe en BDD.
+    Le logo est construit à partir de l'ID SofaScore de l'équipe.
     Retourne l'id Supabase de l'équipe.
     """
-    existant = supabase.table("team").select("id").eq("name", nom).execute()
-    if existant.data:
-        team_id = existant.data[0]["id"]
-        if logo_url:
-            supabase.table("team").update({"logo_url": logo_url}).eq("id", team_id).execute()
+    raw_name = team_data["name"]
+    name     = TEAM_NAME_ALIASES.get(raw_name, raw_name)
+    sofa_tid = team_data["id"]
+
+    payload = {
+        "name":       name,
+        "short_name": team_data.get("shortName", name[:20]),
+        "league":     league_name,
+        "logo_url":   f"https://api.sofascore.com/api/v1/team/{sofa_tid}/image",
+    }
+
+    existing = supabase.table("team").select("id").eq("name", name).execute()
+    if existing.data:
+        team_id = existing.data[0]["id"]
+        supabase.table("team").update(payload).eq("id", team_id).execute()
         return team_id
 
-    result = supabase.table("team").insert({
-        "name":       nom,
-        "short_name": nom_court,
-        "league":     ligue,
-        "logo_url":   logo_url,
-    }).execute()
+    result = supabase.table("team").insert(payload).execute()
     return result.data[0]["id"]
 
 
-def upsert_match(match: dict, home_id: int, away_id: int, ligue: str) -> None:
+def check_migration() -> None:
     """
-    Insère ou met à jour un match avec fd_match_id comme clé de conflit.
-
-    football-data.org fournit :
-    - utcDate : date ISO 8601 en UTC
-    - status  : FINISHED, SCHEDULED, IN_PLAY, etc.
-    - score.fullTime.home / .away : score final
-
-    Si le match existe déjà (même fd_match_id), le statut et le score sont mis à jour.
+    Vérifie que la migration 003 est correctement appliquée :
+    — colonne sofascore_id présente sur match
+    — contrainte UNIQUE sur sofascore_id (requise pour ON CONFLICT)
+    Arrête le script avec un message clair si un élément manque.
     """
-    fd_id  = match["id"]                         # identifiant football-data.org
-    status = STATUS_MAP.get(match.get("status", ""), "upcoming")
+    try:
+        supabase.table("match").select("sofascore_id").limit(1).execute()
+    except Exception:
+        _migration_error("La colonne sofascore_id est absente de la table match.")
 
-    # football-data.org retourne la date en ISO 8601 UTC ("2024-08-16T19:00:00Z")
-    match_date = match.get("utcDate")
+    try:
+        supabase.table("match").upsert(
+            {"sofascore_id": -1},
+            on_conflict="sofascore_id",
+        ).execute()
+    except Exception as e:
+        msg = str(e)
+        if "42P10" in msg or "no unique or exclusion constraint" in msg:
+            _migration_error(
+                "La contrainte UNIQUE sur sofascore_id est manquante.\n"
+                "Exécute dans Supabase SQL Editor :\n\n"
+                "  ALTER TABLE match  ADD UNIQUE (sofascore_id);\n"
+                "  ALTER TABLE player ADD UNIQUE (sofascore_id);"
+            )
 
-    # Le score n'est disponible que si le match est terminé
-    score = match.get("score", {}).get("fullTime", {})
-    score_home = score.get("home") if status == "finished" else None
-    score_away = score.get("away") if status == "finished" else None
+
+def _migration_error(detail: str) -> None:
+    print("\n" + "=" * 60)
+    print("ERREUR : migration 003 incomplète")
+    print("=" * 60)
+    print(detail)
+    print("\nMigration complète (db/migrations/003_sofascore_integration.sql)")
+    print("=" * 60)
+    raise SystemExit(1)
+
+
+def upsert_match(event: dict, home_id: int, away_id: int, league_name: str) -> None:
+    """
+    Insère ou met à jour un match en utilisant sofascore_id comme clé de conflit.
+    SofaScore stocke la date de début en timestamp Unix (secondes depuis epoch).
+    """
+    status_type = event.get("status", {}).get("type", "notstarted")
+    status      = STATUS_MAP.get(status_type, "upcoming")
+
+    start_ts   = event.get("startTimestamp")
+    match_date = (
+        datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+        if start_ts else None
+    )
+
+    home_score = event.get("homeScore", {}).get("current")
+    away_score = event.get("awayScore", {}).get("current")
+
+    # URL directe vers la page match SofaScore (utilisée par fetch_lineups.py)
+    # Format réel : /football/match/{slug}/{customId}#id:{eventId}
+    slug      = event.get("slug", "")
+    custom_id = event.get("customId", "")
+    sofa_match_url = (
+        f"https://www.sofascore.com/football/match/{slug}/{custom_id}"
+        f"#id:{event['id']},tab:lineups"
+        if slug and custom_id else None
+    )
 
     payload = {
-        "fd_match_id":  fd_id,
-        "home_team_id": home_id,
-        "away_team_id": away_id,
-        "league":       ligue,
-        "match_date":   match_date,
-        "status":       status,
-        "score_home":   score_home,
-        "score_away":   score_away,
+        "sofascore_id":  event["id"],
+        "home_team_id":  home_id,
+        "away_team_id":  away_id,
+        "league":        league_name,
+        "match_date":    match_date,
+        "status":        status,
+        "score_home":    home_score,
+        "score_away":    away_score,
+        "sofa_match_url": sofa_match_url,
     }
 
-    # on_conflict="fd_match_id" : mise à jour si le match existe déjà
-    supabase.table("match").upsert(payload, on_conflict="fd_match_id").execute()
+    try:
+        supabase.table("match").upsert(payload, on_conflict="sofascore_id").execute()
+    except Exception as e:
+        if "23505" in str(e):
+            supabase.table("match").update({"sofascore_id": event["id"]}) \
+                .eq("home_team_id", home_id) \
+                .eq("away_team_id", away_id) \
+                .eq("match_date", match_date) \
+                .execute()
+            supabase.table("match").upsert(payload, on_conflict="sofascore_id").execute()
+        else:
+            raise
 
 
 # ================================
-# Fetch par championnat
+# Helpers modale / popup
 # ================================
 
-async def fetch_ligue(
-    session: aiohttp.ClientSession, code: str, ligue_nom: str
-) -> None:
+def _dismiss_overlays(page) -> None:
+    """Supprime cookie consent et modal SofaScore (login/promo) via JS + Escape."""
+    for selector in [
+        'button[title*="Accept"]',
+        'button[title*="Accepter"]',
+        '[class*="fc-primary-button"]',
+        'button:has-text("Accept all")',
+        '.fc-cta-consent',
+    ]:
+        try:
+            btn = page.locator(selector).first
+            if btn.is_visible(timeout=800):
+                btn.click(force=True)
+                time.sleep(0.4)
+                break
+        except Exception:
+            pass
+
+    try:
+        page.evaluate("""
+            document.querySelector('.fc-consent-root')?.remove();
+            document.querySelectorAll('[data-testid="modal"]').forEach(e => e.remove());
+            document.querySelectorAll('.ui-modal').forEach(e => e.remove());
+        """)
+    except Exception:
+        pass
+
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+
+    time.sleep(0.3)
+
+
+# ================================
+# Fetch par championnat (interception)
+# ================================
+
+def fetch_league(page, context, league_name: str, ids: dict) -> None:
     """
-    Récupère et stocke tous les matchs d'un championnat depuis football-data.org.
+    Récupère TOUS les matchs de la saison 2025-2026 pour un championnat.
 
-    Un seul appel GET suffit pour obtenir TOUS les matchs de la saison
-    (terminés + à venir), contrairement à l'approche round-par-round précédente.
+    Stratégie : navigation par round via le dropdown SofaScore.
+    1. Aller sur la page du tournoi → capture le round actuel automatiquement.
+    2. Ouvrir le dropdown Round (force=True pour passer les overlays).
+    3. Lister toutes les options disponibles (Round 1…38).
+    4. Cliquer chaque round → SofaScore émet une requête native /events/round/N.
+    5. Intercepter cette réponse → upsert en BDD.
     """
-    print(f"\n=== {ligue_nom} ===")
+    print(f"\n=== {league_name} ===")
+    tid  = ids["tournament_id"]
+    sid  = ids["season_id"]
+    slug = ids.get("slug", "")
 
-    url = f"https://api.football-data.org/v4/competitions/{code}/matches"
+    # round_num → liste d'events
+    captured_rounds: dict[int, list] = {}
 
-    # Petite pause pour respecter la limite de 10 requêtes/min du tier gratuit
-    await asyncio.sleep(6)
+    def _on_response(response):
+        url = response.url
+        # Pas de filtre sur sid : on capture quelle que soit la saison chargée
+        if f"/unique-tournament/{tid}/season/" in url and "/events/round/" in url:
+            try:
+                m = re.search(r"/events/round/(\d+)", url)
+                if not m:
+                    return
+                rnum = int(m.group(1))
+                data = response.json()
+                evts = data.get("events", [])
+                if evts:
+                    captured_rounds[rnum] = evts
+            except Exception:
+                pass
 
-    async with session.get(url, params={"season": SAISON}, headers=_headers()) as resp:
-        if resp.status != 200:
-            print(f"  Erreur {resp.status} : {await resp.text()}")
-            return
-        data = await resp.json()
+    page.on("response", _on_response)
 
-    matchs = data.get("matches", [])
-    print(f"  {len(matchs)} matchs reçus")
+    # ---- Naviguer vers la page du tournoi ----
+    try:
+        page.goto(
+            f"https://www.sofascore.com/tournament/{slug}",
+            wait_until="domcontentloaded",   # plus robuste que networkidle
+            timeout=45000,
+        )
+        # Attendre que les requêtes API partent (networkidle + buffer)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        time.sleep(3)  # buffer pour les tournois qui chargent tardiveme
+    except Exception as e:
+        print(f"  [nav warning] {e}")
 
-    termines = 0
-    a_venir  = 0
+    _dismiss_overlays(page)
 
-    for match in matchs:
-        home = match.get("homeTeam", {})
-        away = match.get("awayTeam", {})
+    # ---- Trouver le dropdown de round (multi-langue) ----
+    # SofaScore utilise "Round", "Matchday", "Spieltag", "Journée", "Jornada", "Giornata"
+    ROUND_PATTERN = re.compile(
+        r"(Round|Matchday|Spieltag|Journ[eé]e|Jornada|Giornata)\s+\d+",
+        re.IGNORECASE,
+    )
+    round_btn = page.locator('[class*="dropdown__button"]').filter(
+        has_text=ROUND_PATTERN
+    )
+    try:
+        current_text = round_btn.first.text_content(timeout=5000).strip()
+        print(f"  Round actuel : {current_text}")
+    except Exception:
+        print("  [warn] Dropdown Round introuvable — on s'arrête au round intercepté")
+        page.remove_listener("response", _on_response)
+        _store_captured(captured_rounds, league_name)
+        return
 
-        # Certains matchs futurs n'ont pas encore d'équipes assignées
-        if not home.get("name") or not away.get("name"):
+    # ---- Ouvrir le dropdown et récupérer la liste des rounds ----
+    round_btn.first.click(force=True)
+    time.sleep(0.8)
+
+    options = page.locator('[role="option"]')
+    opt_count = options.count()
+    if opt_count == 0:
+        print("  [warn] Aucune option dans le dropdown")
+        page.remove_listener("response", _on_response)
+        _store_captured(captured_rounds, league_name)
+        return
+
+    round_labels = [options.nth(i).text_content().strip() for i in range(opt_count)]
+    print(f"  Rounds disponibles : {opt_count}  ({round_labels[0]} … {round_labels[-1]})")
+
+    def _extract_rnum(label: str) -> int | None:
+        """Extrait le numéro de round quel que soit le libellé (Round/Matchday/Spieltag…)."""
+        m = re.search(r"\d+", label)
+        return int(m.group()) if m else None
+
+    # ---- Itérer sur chaque round ----
+    for idx, label in enumerate(round_labels):
+        rnum = _extract_rnum(label)
+        if rnum is None:
             continue
 
-        home_id = upsert_equipe(home["name"], home.get("shortName", ""), ligue_nom, home.get("crest", ""))
-        away_id = upsert_equipe(away["name"], away.get("shortName", ""), ligue_nom, away.get("crest", ""))
-        upsert_match(match, home_id, away_id, ligue_nom)
-
-        if match.get("status") == "FINISHED":
-            termines += 1
+        if rnum in captured_rounds:
+            # Round déjà chargé lors de la navigation initiale — clic sans attente
+            options.nth(idx).click(force=True)
         else:
-            a_venir += 1
+            # expect_response garantit que Playwright traite la réponse native
+            # avant de passer au round suivant (évite la race condition du sleep loop)
+            try:
+                with page.expect_response(
+                    lambda r, rn=rnum, t=tid: (
+                        f"/unique-tournament/{t}/season/" in r.url
+                        and f"/events/round/{rn}" in r.url
+                    ),
+                    timeout=8000,
+                ):
+                    options.nth(idx).click(force=True)
+            except Exception:
+                pass  # timeout — capturé via on_resp si arrivé plus tard
 
-    print(f"  {termines} terminés + {a_venir} à venir importés")
+        evts = captured_rounds.get(rnum, [])
+        print(f"    {label} : {len(evts)} matchs")
+
+        # Ré-ouvrir le dropdown pour le round suivant (sauf si c'est le dernier)
+        if idx < opt_count - 1:
+            time.sleep(0.3)
+            _dismiss_overlays(page)
+            round_btn.first.click(force=True)
+            time.sleep(0.6)
+            options = page.locator('[role="option"]')
+
+    page.remove_listener("response", _on_response)
+    _store_captured(captured_rounds, league_name)
+
+
+def _store_captured(captured_rounds: dict, league_name: str) -> None:
+    """Upsert en BDD tous les events capturés pour ce championnat."""
+    total = 0
+    for rnum in sorted(captured_rounds):
+        for evt in captured_rounds[rnum]:
+            home_id = upsert_team(evt["homeTeam"], league_name)
+            away_id = upsert_team(evt["awayTeam"], league_name)
+            upsert_match(evt, home_id, away_id, league_name)
+            total += 1
+    print(f"  => {total} matchs importés en BDD")
 
 
 # ================================
 # Point d'entrée
 # ================================
 
-async def run() -> None:
-    """Lance la collecte pour toutes les ligues, avec pause entre chaque requête."""
-    if not FOOTBALL_DATA_TOKEN:
-        print("ERREUR : FOOTBALL_DATA_API_KEY manquant dans le .env")
-        print("Inscris-toi gratuitement sur https://www.football-data.org/")
-        return
+def fetch_and_store_matches() -> None:
+    """Récupère tous les matchs (terminés + à venir) de la saison pour chaque championnat."""
+    check_migration()
 
-    async with aiohttp.ClientSession() as session:
-        for code, ligue_nom in LIGUES.items():
-            await fetch_ligue(session, code, ligue_nom)
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            locale="fr-FR",
+        )
+        page = context.new_page()
+
+        print("  [playwright] Ouverture de SofaScore...")
+        page.goto("https://www.sofascore.com/", wait_until="domcontentloaded", timeout=30000)
+        time.sleep(2)
+
+        for league_name, ids in CHAMPIONNATS_SOFA.items():
+            fetch_league(page, context, league_name, ids)
+
+        browser.close()
 
     print("\nImport terminé !")
 
 
-# Compatibilité avec fetch_all.py
-def fetch_and_store_matches() -> None:
-    """Point d'entrée synchrone pour fetch_all.py."""
-    asyncio.run(run())
-
-
 if __name__ == "__main__":
-    asyncio.run(run())
+    fetch_and_store_matches()

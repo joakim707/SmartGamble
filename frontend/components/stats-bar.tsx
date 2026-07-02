@@ -1,6 +1,6 @@
 'use client'
 
-import { TrendingUp, Trophy, Clock, Zap } from 'lucide-react'
+import { Trophy, CheckCircle, Clock, Layers } from 'lucide-react'
 import type { Match } from '@/lib/types'
 
 interface StatsBarProps {
@@ -8,18 +8,16 @@ interface StatsBarProps {
 }
 
 export function StatsBar({ matches }: StatsBarProps) {
-  const totalMatches = matches.length
-  const avgConfidence = totalMatches > 0
-    ? Math.round(matches.reduce((acc, m) => acc + (m.confidenceScore || 0), 0) / totalMatches)
-    : 0
-  const highConfidenceCount = matches.filter(m => (m.confidenceScore || 0) >= 75).length
-  const leagues = [...new Set(matches.map(m => m.league))].length
+  const total     = matches.length
+  const finished  = matches.filter(m => m.status === 'finished').length
+  const upcoming  = matches.filter(m => m.status === 'upcoming' || m.status === 'live').length
+  const leagues   = [...new Set(matches.map(m => m.league))].length
 
   const stats = [
-    { label: 'Matchs à venir', value: totalMatches, icon: Clock },
-    { label: 'Championnats', value: leagues, icon: Trophy },
-    { label: 'Confiance moyenne', value: `${avgConfidence}%`, icon: TrendingUp },
-    { label: 'Haute fiabilité', value: highConfidenceCount, icon: Zap },
+    { label: 'Total matchs', value: total,    icon: Layers       },
+    { label: 'Terminés',     value: finished,  icon: CheckCircle  },
+    { label: 'A venir',      value: upcoming,  icon: Clock        },
+    { label: 'Championnats', value: leagues,   icon: Trophy       },
   ]
 
   return (

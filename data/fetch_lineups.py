@@ -1,24 +1,22 @@
 """
-Récupère les compositions de match depuis football-data.org
-et les stocke dans les tables 'player' et 'lineup' de Supabase.
+Récupère les compositions de match depuis SofaScore et les stocke en BDD.
 
-football-data.org expose les titulaires et remplaçants pour chaque match
-terminé via GET /v4/matches/{fd_match_id}.
+Flow : pour chaque match terminé avec un sofascore_id et une sofa_match_url
+       → navigue vers la page match SofaScore (Playwright)
+       → intercepte la réponse native /api/v1/event/{id}/lineups
+       → upsert joueurs dans 'player' (via sofascore_id)
+       → upsert titulaires + absents dans 'lineup'
 
-Limite : 10 requêtes/min sur le tier gratuit → pause de 6s entre chaque match.
-Pour ~380 matchs par ligue × 5 ligues, prévoir plusieurs heures d'exécution.
-Conseil : lancer sur un sous-ensemble (ex: une ligue) et relancer pour les autres.
+Bypass Cloudflare : on laisse SofaScore charger sa page normalement.
+Le navigateur navigue vers la page match ; SofaScore.com appelle
+api.sofascore.com lui-même (requête native, TLS réel, cookies CF présents).
+On intercepte la réponse au vol via page.on("response", …).
 
-Flow : pour chaque match terminé avec fd_match_id en BDD
-       → GET https://api.football-data.org/v4/matches/{fd_match_id}
-       → upsert chaque joueur (titulaire + remplaçant) dans 'player'
-       → upsert dans 'lineup' (match_id, player_id, is_starter, is_absent=False)
+Pré-requis : migrations 003 et 004 appliquées.
 """
 
-import asyncio
 import os
-
-import aiohttp
+import time
 from supabase import create_client
 from dotenv import load_dotenv
 
@@ -27,216 +25,308 @@ load_dotenv()
 # ================================
 # Configuration
 # ================================
-
-SUPABASE_URL        = os.getenv("SUPABASE_URL")
-SUPABASE_KEY        = os.getenv("SUPABASE_KEY")
-FOOTBALL_DATA_TOKEN = os.getenv("FOOTBALL_DATA_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Pause entre chaque requête pour respecter la limite de 10 req/min
-PAUSE_SECONDES = 6.5
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
-# En-têtes requis par football-data.org
-def _headers() -> dict:
-    return {"X-Auth-Token": FOOTBALL_DATA_TOKEN}
-
-# Mapping des positions football-data.org vers nos libellés
+# SofaScore utilise des codes de position à une lettre
 POSITION_MAP = {
-    "Goalkeeper":  "Goalkeeper",
-    "Defence":     "Defender",
-    "Midfield":    "Midfielder",
-    "Offence":     "Forward",
-    "Defender":    "Defender",
-    "Midfielder":  "Midfielder",
-    "Forward":     "Forward",
-    "Attacker":    "Forward",
+    "G": "Goalkeeper",
+    "D": "Defender",
+    "M": "Midfielder",
+    "F": "Forward",
 }
+
+
+def _reconnect_supabase() -> None:
+    """Recrée le client Supabase pour réinitialiser le pool de connexions HTTP/2."""
+    global supabase
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # ================================
 # Helpers Supabase
 # ================================
 
-def upsert_joueur(nom: str, team_id: int, position: str | None) -> int | None:
+def upsert_player(sofa_player: dict, team_id: int, shirt_number: int | None = None) -> int | None:
     """
-    Insère le joueur s'il n'existe pas encore pour cette équipe, ou retourne son id.
-    Clé de recherche : (nom, team_id) — on évite les doublons par joueur.
-    Retourne None si le nom est vide.
+    Insère ou met à jour un joueur via son sofascore_id.
+    Retourne l'id Supabase du joueur, ou None si les données sont incomplètes.
     """
-    if not nom:
+    sofa_id     = sofa_player.get("id")
+    name        = sofa_player.get("name") or sofa_player.get("shortName", "")
+    pos_code    = sofa_player.get("position")
+    position    = POSITION_MAP.get(pos_code, pos_code)
+    nationality = sofa_player.get("country", {}).get("name")
+
+    if not sofa_id or not name:
         return None
 
-    existant = (
-        supabase.table("player")
-        .select("id")
-        .eq("name", nom)
-        .eq("team_id", team_id)
-        .execute()
-    )
-    if existant.data:
-        return existant.data[0]["id"]
+    result = supabase.table("player").upsert(
+        {
+            "sofascore_id": sofa_id,
+            "team_id":      team_id,
+            "name":         name,
+            "position":     position,
+            "nationality":  nationality,
+            "shirt_number": shirt_number,
+        },
+        on_conflict="sofascore_id",
+    ).execute()
 
-    result = supabase.table("player").insert({
-        "name":     nom,
-        "team_id":  team_id,
-        "position": position,
-    }).execute()
-
-    return result.data[0]["id"] if result.data else None
+    if not result.data:
+        return None
+    return result.data[0]["id"]
 
 
-def upsert_lineup(match_id: int, team_id: int, player_id: int, is_starter: bool) -> None:
-    """
-    Insère ou met à jour une entrée en lineup.
-    is_starter=True pour les titulaires, False pour les remplaçants.
-    is_absent=False car football-data.org ne liste que les joueurs ayant participé.
-    """
+def upsert_lineup_entry(
+    match_id: int,
+    team_id: int,
+    player_id: int,
+    is_starter: bool,
+    is_absent: bool,
+) -> None:
     supabase.table("lineup").upsert(
         {
             "match_id":   match_id,
             "team_id":    team_id,
             "player_id":  player_id,
             "is_starter": is_starter,
-            "is_absent":  False,
+            "is_absent":  is_absent,
         },
         on_conflict="match_id,team_id,player_id",
     ).execute()
 
 
-def get_ids_matchs_deja_traites() -> set[int]:
+def get_match_team_ids(match_id: int) -> tuple[int | None, int | None]:
+    result = supabase.table("match").select("home_team_id, away_team_id").eq("id", match_id).execute()
+    if not result.data:
+        return None, None
+    row = result.data[0]
+    return row["home_team_id"], row["away_team_id"]
+
+
+def process_side(match_id: int, team_id: int, side_data: dict) -> None:
     """
-    Retourne les match_id qui ont déjà au moins un joueur en lineup.
-    Pagine par blocs de 1000 pour contourner la limite Supabase.
+    Traite un côté (home ou away) d'une réponse lineup SofaScore.
+    Upsert joueurs + titulaires/remplaçants/absents.
     """
-    deja_faits: set[int] = set()
-    offset = 0
-    while True:
-        page = (
-            supabase.table("lineup")
-            .select("match_id")
-            .range(offset, offset + 999)
-            .execute()
+    for entry in side_data.get("players", []):
+        sofa_player  = entry.get("player", {})
+        is_starter   = not entry.get("substitute", True)
+        shirt_number = entry.get("shirtNumber")
+        player_id    = upsert_player(sofa_player, team_id, shirt_number)
+        if player_id:
+            upsert_lineup_entry(match_id, team_id, player_id, is_starter, is_absent=False)
+
+    for entry in side_data.get("missingPlayers", []):
+        sofa_player  = entry.get("player", {})
+        shirt_number = entry.get("shirtNumber")
+        player_id    = upsert_player(sofa_player, team_id, shirt_number)
+        if player_id:
+            upsert_lineup_entry(match_id, team_id, player_id, is_starter=False, is_absent=True)
+            supabase.table("player").update({"is_absent": True}).eq("id", player_id).execute()
+
+
+# ================================
+# Fetch lineup via interception Playwright
+# ================================
+
+def fetch_lineups_for_match(match_id: int, sofa_event_id: int, match_url: str, page) -> None:
+    """
+    Navigue vers la page match SofaScore et intercepte la réponse lineup native.
+
+    SofaScore appelle api.sofascore.com/api/v1/event/{id}/lineups de lui-même
+    lors du chargement de la page → pas de 403 Cloudflare car c'est une
+    requête native du navigateur, pas un fetch() injecté.
+    """
+    lineup_path = f"/api/v1/event/{sofa_event_id}/lineups"
+    captured: dict = {}
+
+    def _on_response(response):
+        if lineup_path in response.url:
+            try:
+                captured["data"] = response.json()
+            except Exception:
+                pass
+
+    page.on("response", _on_response)
+    try:
+        page.goto(match_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(4)
+
+        # Si les lineups ne sont pas encore chargés, essaie de cliquer sur l'onglet
+        if not captured:
+            for text in ("Lineups", "Formations", "Compos"):
+                try:
+                    btn = page.get_by_text(text, exact=True).first
+                    if btn.is_visible():
+                        btn.click()
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                        time.sleep(1)
+                        break
+                except Exception:
+                    pass
+
+    except Exception as e:
+        print(f"    [nav warning] {e}")
+    finally:
+        page.remove_listener("response", _on_response)
+
+    if not captured:
+        print(f"    Aucune réponse lineup interceptée (event {sofa_event_id})")
+        return
+
+    data      = captured.get("data") or {}
+    home_data = data.get("home")
+    away_data = data.get("away")
+
+    if not home_data and not away_data:
+        confirmed = data.get("confirmed", False)
+        print(
+            f"    Compo {'non confirmée' if not confirmed else 'vide'} (event {sofa_event_id})"
         )
-        if not page.data:
-            break
-        for row in page.data:
-            deja_faits.add(row["match_id"])
-        if len(page.data) < 1000:
-            break
-        offset += 1000
-    return deja_faits
+        return
 
+    home_team_id, away_team_id = get_match_team_ids(match_id)
+    if not home_team_id or not away_team_id:
+        print(f"    [skip] Match {match_id} introuvable en BDD")
+        return
 
-# ================================
-# Fetch composition via football-data.org
-# ================================
+    supabase.table("lineup").delete().eq("match_id", match_id).execute()
 
-async def process_match(session: aiohttp.ClientSession, match_row: dict) -> bool:
-    """
-    Récupère et stocke la composition d'un match depuis football-data.org.
+    for side, team_id in (("home", home_team_id), ("away", away_team_id)):
+        side_data = data.get(side)
+        if side_data:
+            process_side(match_id, team_id, side_data)
 
-    GET /v4/matches/{fd_match_id} retourne :
-    {
-      "homeTeam": {"lineup": [...joueurs], "bench": [...remplaçants]},
-      "awayTeam": {"lineup": [...joueurs], "bench": [...remplaçants]}
-    }
-    Chaque joueur : {"name": "...", "position": "Midfielder", "shirtNumber": 8}
-    """
-    match_id    = match_row["id"]
-    fd_match_id = match_row["fd_match_id"]
-    home_team_id = match_row["home_team_id"]
-    away_team_id = match_row["away_team_id"]
-
-    url = f"https://api.football-data.org/v4/matches/{fd_match_id}"
-
-    for tentative in range(1, 4):
-        try:
-            async with session.get(url, headers=_headers()) as resp:
-                if resp.status != 200:
-                    print(f"    Erreur {resp.status} pour fd_match:{fd_match_id}")
-                    return False
-                data = await resp.json()
-            break
-        except aiohttp.ClientError as e:
-            if tentative == 3:
-                print(f"    Échec après 3 tentatives : {e}")
-                return False
-            print(f"    Tentative {tentative}/3 échouée ({e}), retry dans 7s...")
-            await asyncio.sleep(7)
-
-    # Traitement des deux équipes
-    for cote, team_id in [("homeTeam", home_team_id), ("awayTeam", away_team_id)]:
-        equipe_data = data.get(cote, {})
-
-        # Titulaires (lineup) : is_starter=True
-        for joueur in equipe_data.get("lineup", []):
-            nom      = joueur.get("name", "")
-            pos_raw  = joueur.get("position", "")
-            position = POSITION_MAP.get(pos_raw, pos_raw if pos_raw else None)
-            pid = upsert_joueur(nom, team_id, position)
-            if pid:
-                upsert_lineup(match_id, team_id, pid, is_starter=True)
-
-        # Remplaçants (bench) : is_starter=False
-        for joueur in equipe_data.get("bench", []):
-            nom      = joueur.get("name", "")
-            pos_raw  = joueur.get("position", "")
-            position = POSITION_MAP.get(pos_raw, pos_raw if pos_raw else None)
-            pid = upsert_joueur(nom, team_id, position)
-            if pid:
-                upsert_lineup(match_id, team_id, pid, is_starter=False)
-
-    print(f"    OK — compo importée (fd_match:{fd_match_id})")
-    return True
+    print(f"    OK — compo importée (event {sofa_event_id})")
 
 
 # ================================
 # Point d'entrée
 # ================================
 
-async def run() -> None:
+def run() -> None:
     """
-    Parcourt les matchs terminés avec fd_match_id et importe leurs compositions.
-    Les matchs déjà traités sont ignorés. Pause de 6.5s entre chaque requête
-    pour respecter la limite de 10 req/min de football-data.org tier gratuit.
+    Parcourt tous les matchs terminés avec sofascore_id + sofa_match_url
+    et récupère leur composition depuis SofaScore via Playwright (interception).
+    Les matchs qui ont déjà des compositions SofaScore sont ignorés.
     """
-    if not FOOTBALL_DATA_TOKEN:
-        print("ERREUR : FOOTBALL_DATA_API_KEY manquant dans le .env")
-        return
-
-    # Matchs terminés ayant un fd_match_id
     result = (
         supabase.table("match")
-        .select("id, fd_match_id, home_team_id, away_team_id, league")
-        .filter("fd_match_id", "not.is", "null")
+        .select("id, sofascore_id, league, sofa_match_url")
+        .filter("sofascore_id",   "not.is", "null")
+        .filter("sofa_match_url", "not.is", "null")
         .eq("status", "finished")
         .execute()
     )
-    tous_les_matchs = result.data or []
-    print(f"\n{len(tous_les_matchs)} matchs terminés avec fd_match_id")
+    matches = result.data or []
+    print(f"\n{len(matches)} matchs terminés avec sofascore_id + sofa_match_url")
 
-    # Filtre les matchs déjà importés
-    deja_traites = get_ids_matchs_deja_traites()
-    print(f"{len(deja_traites)} matchs déjà importés, ignorés")
+    # IDs des joueurs ayant un sofascore_id (vrais joueurs SofaScore)
+    sofa_player_ids: set[int] = set()
+    offset = 0
+    while True:
+        page_data = (
+            supabase.table("player")
+            .select("id")
+            .filter("sofascore_id", "not.is", "null")
+            .range(offset, offset + 999)
+            .execute()
+        )
+        if not page_data.data:
+            break
+        for row in page_data.data:
+            sofa_player_ids.add(row["id"])
+        if len(page_data.data) < 1000:
+            break
+        offset += 1000
+    print(f"{len(sofa_player_ids)} joueurs SofaScore en BDD")
 
-    a_traiter = [m for m in tous_les_matchs if m["id"] not in deja_traites]
-    print(f"{len(a_traiter)} matchs à traiter")
-    print(f"Durée estimée : ~{len(a_traiter) * PAUSE_SECONDES / 60:.0f} min (limite 10 req/min)\n")
+    # Matchs ayant déjà au moins un joueur SofaScore → skip
+    already_done: set[int] = set()
+    offset = 0
+    while True:
+        page_data = (
+            supabase.table("lineup")
+            .select("match_id, player_id")
+            .range(offset, offset + 999)
+            .execute()
+        )
+        if not page_data.data:
+            break
+        for row in page_data.data:
+            if row["player_id"] in sofa_player_ids:
+                already_done.add(row["match_id"])
+        if len(page_data.data) < 1000:
+            break
+        offset += 1000
+    print(f"{len(already_done)} matchs déjà en BDD, ignorés")
 
-    if not a_traiter:
+    todo = [m for m in matches if m["id"] not in already_done]
+    print(f"{len(todo)} matchs à traiter")
+
+    if not todo:
         print("Rien à faire.")
         return
 
-    async with aiohttp.ClientSession() as session:
-        for i, match in enumerate(a_traiter, 1):
-            print(f"  [{i}/{len(a_traiter)}] Match {match['id']} (fd:{match['fd_match_id']})")
-            await process_match(session, match)
-            # Pause obligatoire entre chaque requête (limite 10 req/min du tier gratuit)
-            await asyncio.sleep(PAUSE_SECONDES)
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            locale="fr-FR",
+        )
+        page = context.new_page()
+
+        print("  [playwright] Ouverture de SofaScore...")
+        page.goto("https://www.sofascore.com/", wait_until="domcontentloaded", timeout=30000)
+        time.sleep(2)
+
+        for i, match in enumerate(todo, 1):
+            match_id      = match["id"]
+            sofa_event_id = match["sofascore_id"]
+            match_url     = match["sofa_match_url"]
+
+            # Reconnexion Supabase préventive toutes les 80 itérations
+            if i % 80 == 0:
+                print("  [reconnexion Supabase préventive]")
+                _reconnect_supabase()
+
+            print(f"  [{i}/{len(todo)}] Match {match_id} (sofa:{sofa_event_id})")
+
+            try:
+                fetch_lineups_for_match(match_id, sofa_event_id, match_url, page)
+            except Exception as e:
+                err = str(e)
+                if "RemoteProtocolError" in err or "ConnectionTerminated" in err:
+                    print(f"  [reconnexion Supabase après erreur HTTP/2] {e}")
+                    _reconnect_supabase()
+                    try:
+                        fetch_lineups_for_match(match_id, sofa_event_id, match_url, page)
+                    except Exception as e2:
+                        print(f"  [échec après reconnexion, match ignoré] {e2}")
+                else:
+                    print(f"  [erreur inattendue, match ignoré] {e}")
+
+            time.sleep(0.8)
+
+        browser.close()
 
     print("\nCompositions importées !")
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    run()
