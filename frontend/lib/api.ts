@@ -1,6 +1,42 @@
 import { supabase } from './supabase'
 import { Match, Player } from './types'
 
+const PREDICT_API_URL = process.env.NEXT_PUBLIC_PREDICT_API_URL || 'http://localhost:5000'
+
+/**
+ * Interroge l'API de prédiction (data/api_predict.py) pour obtenir un score de
+ * confiance réel (probabilité max renvoyée par le modèle) pour chaque match,
+ * en un seul appel réseau. Si l'API n'est pas lancée ou répond mal, on ne
+ * bloque pas l'affichage des matchs : confidenceScore reste simplement absent.
+ */
+async function getConfidenceScores(
+  matches: { id: number; home_team_id: number; away_team_id: number }[]
+): Promise<Map<number, number>> {
+  const scores = new Map<number, number>()
+  if (matches.length === 0) return scores
+
+  try {
+    const res = await fetch(`${PREDICT_API_URL}/predict/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        matches: matches.map(m => ({ home_team_id: m.home_team_id, away_team_id: m.away_team_id })),
+      }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+    const { results } = await res.json()
+    matches.forEach((m, i) => {
+      const r = results?.[i]
+      if (r && !r.error) scores.set(m.id, Math.round(r.confidence * 100))
+    })
+  } catch (err) {
+    console.error("API de prédiction indisponible (confidenceScore non calculé) :", err)
+  }
+
+  return scores
+}
+
 export async function getUpcomingMatches(): Promise<Match[]> {
   // Mode simulation : pas de matchs à venir en intersaison → on affiche les
   // 60 derniers jours de matchs terminés pour pouvoir tester les compositions.
@@ -81,9 +117,14 @@ export async function getUpcomingMatches(): Promise<Match[]> {
   const matchIds  = matchesData.map(m => m.id)
   const teamIds   = [...new Set(matchesData.flatMap((m: any) => [m.home_team.id, m.away_team.id]))]
 
-  const [{ data: oddsData }, { data: formData }] = await Promise.all([
+  const [{ data: oddsData }, { data: formData }, confidenceScores] = await Promise.all([
     supabase.from('odds').select('*').in('match_id', matchIds),
     supabase.from('team_stats').select('team_id, form').in('team_id', teamIds).eq('season', '2024-25'),
+    getConfidenceScores(matchesData.map((m: any) => ({
+      id: m.id,
+      home_team_id: m.home_team.id,
+      away_team_id: m.away_team.id,
+    }))),
   ])
 
   // 3. Map forme par équipe
@@ -142,7 +183,7 @@ export async function getUpcomingMatches(): Promise<Match[]> {
       odds: formattedOdds,
       homeForm: formMap.get(m.home_team.id),
       awayForm: formMap.get(m.away_team.id),
-      confidenceScore: Math.floor(Math.random() * (95 - 60 + 1)) + 60
+      confidenceScore: confidenceScores.get(m.id)
     }
   })
 }
