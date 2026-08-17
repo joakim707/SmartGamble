@@ -1,5 +1,6 @@
 import os
 import re
+import random
 import requests
 from difflib import SequenceMatcher
 from supabase import create_client
@@ -25,6 +26,19 @@ LEAGUES = {
 
 # Bookmakers FR pertinents avec leurs clés exactes de l'API
 BOOKMAKERS = "winamax_fr,unibet_fr,betclic_fr,pmu_fr,betfair_ex_eu,pinnacle,williamhill,unibet_se,unibet_nl,betsson,marathonbet,onexbet"
+
+# ================================
+# Config — cotes simulées (mode hors-saison)
+# ================================
+# the-odds-api.com ne fournit pas de cotes historiques sur le plan gratuit, et son
+# endpoint /odds ne renvoie que les vraies rencontres à venir — qui ne tombent jamais
+# dans la fenêtre simulée par le dashboard (frontend/lib/api.ts, getUpcomingMatches).
+# On génère donc des cotes plausibles à partir du score final des matchs de cette période.
+SIM_DATE_FROM  = "2026-01-01T00:00:00"
+SIM_DATE_TO    = "2026-05-29T23:59:59"
+SIM_LEAGUES    = ["Ligue 1", "Premier League", "La Liga", "Bundesliga", "Serie A"]
+SIM_BOOKMAKERS = ["Winamax", "Unibet", "Betclic", "Pinnacle", "Betfair Exchange"]
+SIM_OVERROUND  = 1.06  # marge bookmaker (~6%), réaliste pour un marché h2h
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -95,6 +109,65 @@ def upsert_odds(match_id: int, bookmaker: str, home: float, draw: float, away: f
 
 
 # ================================
+# Cotes simulées (matchs finished de la période dashboard)
+# ================================
+def _implied_probabilities(score_home: int, score_away: int) -> tuple[float, float, float]:
+    """
+    Dérive (p_home, p_draw, p_away) du score final : l'issue réelle est favorisée,
+    d'autant plus que l'écart de buts est grand. Léger avantage terrain sur les nuls.
+    """
+    diff = score_home - score_away
+    margin = abs(diff)
+
+    if diff == 0:
+        return 0.36, 0.30, 0.34
+
+    p_win = min(0.42 + 0.08 * margin, 0.78)
+    p_draw = max(0.28 - 0.05 * margin, 0.10)
+    p_lose = 1 - p_win - p_draw
+
+    return (p_win, p_draw, p_lose) if diff > 0 else (p_lose, p_draw, p_win)
+
+
+def _simulated_odds_for_match(match_id: int, p_home: float, p_draw: float, p_away: float):
+    """Cotes décimales par bookmaker simulé : marge + bruit déterministe (seed = match+bookmaker)."""
+    for bookmaker in SIM_BOOKMAKERS:
+        rng = random.Random(f"{match_id}-{bookmaker}")
+        home_odd = round(1 / (p_home * SIM_OVERROUND) * rng.uniform(0.96, 1.04), 2)
+        draw_odd = round(1 / (p_draw * SIM_OVERROUND) * rng.uniform(0.96, 1.04), 2)
+        away_odd = round(1 / (p_away * SIM_OVERROUND) * rng.uniform(0.96, 1.04), 2)
+        yield bookmaker, home_odd, draw_odd, away_odd
+
+
+def generate_simulated_odds() -> None:
+    """Génère des cotes pour les matchs finished de la période simulée par le dashboard."""
+    result = (
+        supabase.table("match")
+        .select("id, league, score_home, score_away")
+        .in_("league", SIM_LEAGUES)
+        .eq("status", "finished")
+        .gte("match_date", SIM_DATE_FROM)
+        .lte("match_date", SIM_DATE_TO)
+        .filter("score_home", "not.is", "null")
+        .filter("score_away", "not.is", "null")
+        .execute()
+    )
+    matches = result.data or []
+    print(f"\n{len(matches)} matchs terminés (période simulée) à coter")
+
+    count = 0
+    for m in matches:
+        p_home, p_draw, p_away = _implied_probabilities(m["score_home"], m["score_away"])
+        for bookmaker, home_odd, draw_odd, away_odd in _simulated_odds_for_match(
+            m["id"], p_home, p_draw, p_away
+        ):
+            upsert_odds(m["id"], bookmaker, home_odd, draw_odd, away_odd)
+            count += 1
+
+    print(f"{count} lignes de cotes simulées insérées sur {len(matches)} matchs")
+
+
+# ================================
 # Main
 # ================================
 def fetch_and_store_odds():
@@ -152,4 +225,16 @@ def fetch_and_store_odds():
 
 
 if __name__ == "__main__":
-    fetch_and_store_odds()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Importe les cotes réelles (upcoming) et/ou génère des cotes simulées (finished, période dashboard)."
+    )
+    parser.add_argument("--skip-real", action="store_true", help="Ne pas interroger the-odds-api.com")
+    parser.add_argument("--skip-simulated", action="store_true", help="Ne pas générer de cotes simulées")
+    args = parser.parse_args()
+
+    if not args.skip_real:
+        fetch_and_store_odds()
+    if not args.skip_simulated:
+        generate_simulated_odds()

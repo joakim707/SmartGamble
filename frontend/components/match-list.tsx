@@ -57,9 +57,9 @@ export function MatchList({ matches, selectedLeague, onMatchClick }: MatchListPr
 
   // Single league view
   const league = LEAGUES.find(l => l.id === selectedLeague)
-  
+
   return (
-    <div className="bg-card rounded-xl overflow-hidden border border-border">
+    <div className="bg-card rounded-xl overflow-hidden border border-border shrink-0">
       {league && <LeagueHeader league={league} />}
       <div className="divide-y divide-border">
         {matches.map((match) => (

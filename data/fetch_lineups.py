@@ -276,22 +276,33 @@ def fetch_lineups_for_match(match_id: int, sofa_event_id: int) -> None:
 # Point d'entrée
 # ================================
 
-def run() -> None:
+# Période affichée par le dashboard en mode simulation (frontend/lib/api.ts, getUpcomingMatches)
+DATE_FROM = "2026-01-01T00:00:00"
+DATE_TO   = "2026-05-29T23:59:59"
+
+
+def run(limit: int | None = None) -> None:
     """
-    Parcourt tous les matchs terminés avec un sofascore_id, par championnat,
-    et récupère leur composition depuis SofaScore.
+    Parcourt les matchs terminés avec un sofascore_id dans la période affichée
+    par le dashboard en mode simulation, par championnat, et récupère leur
+    composition depuis SofaScore.
     Les matchs qui ont déjà des compositions sont ignorés.
+
+    limit : si fourni, ne traite que les `limit` premiers matchs (pour tester).
     """
-    # Matchs terminés avec sofascore_id, avec le nom du championnat pour le warmup
+    # Matchs terminés avec sofascore_id sur la période du dashboard,
+    # avec le nom du championnat pour le warmup
     result = (
         supabase.table("match")
         .select("id, sofascore_id, league")
         .filter("sofascore_id", "not.is", "null")
         .eq("status", "finished")
+        .gte("match_date", DATE_FROM)
+        .lte("match_date", DATE_TO)
         .execute()
     )
     matches = result.data or []
-    print(f"\n{len(matches)} matchs terminés avec sofascore_id")
+    print(f"\n{len(matches)} matchs terminés avec sofascore_id sur la période {DATE_FROM} → {DATE_TO}")
 
     # Étape 1 : IDs des joueurs ayant un sofascore_id (vrais joueurs SofaScore)
     sofa_player_ids: set[int] = set()
@@ -343,6 +354,18 @@ def run() -> None:
     todo = sum(len(v) for v in by_league.values())
     print(f"{todo} matchs à traiter")
 
+    if limit is not None:
+        capped: dict[str, list] = defaultdict(list)
+        remaining = limit
+        for league, league_matches in by_league.items():
+            if remaining <= 0:
+                break
+            capped[league] = league_matches[:remaining]
+            remaining -= len(capped[league])
+        by_league = capped
+        todo = sum(len(v) for v in by_league.values())
+        print(f"[limite de test] {todo} matchs seront traités")
+
     # Warmup initial
     _warmup_session()
 
@@ -388,4 +411,16 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Importe les compositions de match SofaScore dans Supabase."
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Ne traite que les N premiers matchs (pour tester).",
+    )
+    args = parser.parse_args()
+    run(limit=args.limit)
