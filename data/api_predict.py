@@ -24,9 +24,16 @@ Limites connues (à assumer à l'oral de certification) :
 
 Monitorage (E5) : chaque requête est journalisée dans logs/api.log
 (timestamp, endpoint, statut, durée), avec une ligne "ALERTE" dédiée sur
-toute réponse en erreur (status >= 400). /health expose en plus le total
-de requêtes, le nombre d'erreurs et le temps de réponse moyen depuis le
+toute réponse en erreur (status >= 400) — ça couvre aussi les échecs
+d'authentification (401), sans code dédié : ce sont des erreurs comme
+les autres pour le monitorage. /health expose en plus le total de
+requêtes, le nombre d'erreurs et le temps de réponse moyen depuis le
 démarrage. Voir data/check_monitoring.py pour un résumé en ligne de commande.
+
+Authentification (E5 : restreindre l'accès à l'API) : /predict et
+/predict/batch exigent l'en-tête X-API-Key, comparé à API_SECRET_KEY
+(.env). /health reste public — un endpoint de supervision externe doit
+pouvoir être interrogé sans credentials.
 
 Lancement : python data/api_predict.py   (sert sur http://localhost:5000)
 """
@@ -37,6 +44,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 
 import pandas as pd
@@ -97,6 +105,11 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Erreur : SUPABASE_URL ou SUPABASE_KEY manquant dans le fichier .env")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")
+
+if not API_SECRET_KEY:
+    raise ValueError("Erreur : API_SECRET_KEY manquant dans le fichier .env")
 
 RESULT_LABELS = {2: "Domicile", 1: "Nul", 0: "Exterieur"}
 
@@ -230,6 +243,20 @@ def _log_request(response):
     return response
 
 
+def require_api_key(view):
+    """
+    Restreint une route à l'en-tête X-API-Key. Le 401 renvoyé passe par la
+    même réponse que les autres routes, donc _log_request() ci-dessus le
+    journalise automatiquement comme une ALERTE, sans code supplémentaire.
+    """
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if request.headers.get("X-API-Key") != API_SECRET_KEY:
+            return jsonify({"error": "Non autorisé : en-tête X-API-Key manquant ou invalide"}), 401
+        return view(*args, **kwargs)
+    return wrapper
+
+
 @app.get("/health")
 def health():
     stats = _stats_snapshot()
@@ -243,6 +270,7 @@ def health():
 
 
 @app.post("/predict")
+@require_api_key
 def predict():
     body = request.get_json(silent=True) or {}
     home_id, away_id = body.get("home_team_id"), body.get("away_team_id")
@@ -260,6 +288,7 @@ def predict():
 
 
 @app.post("/predict/batch")
+@require_api_key
 def predict_batch():
     """
     Prédit plusieurs matchs en un seul appel réseau — le dashboard l'utilise

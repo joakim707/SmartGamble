@@ -2,6 +2,11 @@ import { supabase } from './supabase'
 import { Match, Player } from './types'
 
 const PREDICT_API_URL = process.env.NEXT_PUBLIC_PREDICT_API_URL || 'http://localhost:5000'
+// NEXT_PUBLIC_* est injecté dans le bundle envoyé au navigateur : cette clé est donc
+// visible par quiconque inspecte le JS ou le trafic réseau du dashboard. C'est un choix
+// assumé pour une démo locale interne, pas une protection valable en production — il
+// faudrait alors passer par un appel serveur (route API Next.js) qui garde la clé côté back.
+const PREDICT_API_KEY = process.env.NEXT_PUBLIC_PREDICT_API_KEY || ''
 
 /**
  * Interroge l'API de prédiction (data/api_predict.py) pour obtenir un score de
@@ -18,7 +23,7 @@ async function getConfidenceScores(
   try {
     const res = await fetch(`${PREDICT_API_URL}/predict/batch`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': PREDICT_API_KEY },
       body: JSON.stringify({
         matches: matches.map(m => ({ home_team_id: m.home_team_id, away_team_id: m.away_team_id })),
       }),
