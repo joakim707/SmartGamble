@@ -17,7 +17,7 @@ supabase>=2.0.0
 python-dotenv>=1.0.0
 
 # Librairie Understat pour récupérer les stats joueurs
-understat>=1.0.0
+understat>=0.1.0
 
 # Outils d'Analyse de Données et Machine Learning (IA)
 pandas>=2.0.0
