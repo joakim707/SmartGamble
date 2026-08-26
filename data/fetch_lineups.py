@@ -23,15 +23,15 @@ load_dotenv()
 # Configuration
 # ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 
 def _reconnect_supabase() -> None:
     """Recrée le client Supabase pour réinitialiser le pool de connexions HTTP/2."""
     global supabase
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 # Slugs SofaScore par championnat — identiques à fetch_matches.py
 LEAGUE_SLUGS = {

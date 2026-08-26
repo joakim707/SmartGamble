@@ -14,7 +14,7 @@ load_dotenv()
 # ================================
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
 BASE_URL = "https://api.the-odds-api.com/v4"
 
@@ -40,7 +40,7 @@ SIM_LEAGUES    = ["Ligue 1", "Premier League", "La Liga", "Bundesliga", "Serie A
 SIM_BOOKMAKERS = ["Winamax", "Unibet", "Betclic", "Pinnacle", "Betfair Exchange"]
 SIM_OVERROUND  = 1.06  # marge bookmaker (~6%), réaliste pour un marché h2h
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 
 # ================================

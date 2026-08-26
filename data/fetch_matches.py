@@ -21,9 +21,9 @@ load_dotenv()
 # Configuration
 # ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 
 # En-têtes complets imitant Chrome 124 sur Windows 10.
 # SofaScore est protégé par Cloudflare : sans sec-ch-ua et sec-fetch-*, on reçoit 403.

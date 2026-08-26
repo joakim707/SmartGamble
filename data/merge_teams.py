@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
+sb = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_SECRET_KEY'))
 
 PAIRS = [
     (171, 71),  (196, 87),  (175, 60),  (166, 73),  (174, 66),
